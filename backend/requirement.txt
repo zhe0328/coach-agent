@@ -1,0 +1,18 @@
+# Web 框架
+fastapi
+uvicorn[standard]
+
+# 数据库连接
+mysql-connector-python
+
+# 数据验证与模型
+pydantic
+pydantic-settings
+
+# AI 智能体与环境变量
+openai
+python-dotenv
+
+# 可选：如果你需要处理复杂的 Markdown 教材或图谱
+langchain
+langchain-openai
