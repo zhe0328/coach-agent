@@ -4,3 +4,7 @@ venv/
 .mcp.json
 .claude
 data/coach_agent_db_zh.json
+
+**/__pycache__/
+*.py[cod]
+*$py.class
