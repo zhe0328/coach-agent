@@ -1,0 +1,6 @@
+data_cleaning/
+venv/
+.env
+.mcp.json
+.claude
+data/coach_agent_db_zh.json
