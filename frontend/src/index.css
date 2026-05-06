@@ -1,0 +1,84 @@
+@import url("https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;1,9..40,300&display=swap");
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+:root {
+  /* ── Brand palette ────────────────────────── */
+  --navy: #384959;
+  --steel: #6a89a7;
+  --sky: #88bdf2;
+  --pale: #bdddfc;
+
+  /* ── Surfaces ─────────────────────────────── */
+  --bg-deep: #e4f0fb;
+  --bg-surface: #eef6fd;
+  --bg-card: #ffffff;
+  --bg-card-hover: #f5f9ff;
+  --border: #cce0f5;
+  --border-subtle: #ddeef9;
+
+  /* ── Text ─────────────────────────────────── */
+  --text-primary: #384959;
+  --text-secondary: #6a89a7;
+  --text-muted: #9bbdd6;
+
+  /* ── Accent (sky blue) ────────────────────── */
+  --accent: #88bdf2;
+  --accent-dim: rgba(136, 189, 242, 0.15);
+  --accent-glow: rgba(136, 189, 242, 0.4);
+  --accent-light: #e4f1fd;
+
+  /* ── Secondary (steel blue) ───────────────── */
+  --teal: #6a89a7;
+  --teal-dim: rgba(106, 137, 167, 0.12);
+  --teal-light: #ecf3f8;
+
+  /* ── Pale (for safety / warm-up tints) ───── */
+  --gold: #384959;
+  --gold-dim: rgba(189, 221, 252, 0.4);
+  --gold-light: #e8f3fd;
+
+  /* ── Misc ─────────────────────────────────── */
+  --radius-sm: 6px;
+  --radius-md: 12px;
+  --radius-lg: 18px;
+  --radius-xl: 24px;
+
+  --shadow-card:
+    0 1px 4px rgba(56, 73, 89, 0.07), 0 4px 16px rgba(56, 73, 89, 0.06);
+  --shadow-modal: 0 20px 60px rgba(56, 73, 89, 0.22);
+  --shadow-btn: 0 2px 10px rgba(136, 189, 242, 0.5);
+}
+
+html,
+body {
+  height: 100%;
+  background: var(--bg-deep);
+  color: var(--text-primary);
+  font-family: "DM Sans", sans-serif;
+  font-size: 15px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+#root {
+  height: 100%;
+}
+
+::-webkit-scrollbar {
+  width: 4px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--pale);
+  border-radius: 2px;
+}
