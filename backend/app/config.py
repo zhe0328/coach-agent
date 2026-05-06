@@ -16,8 +16,20 @@ class Settings(BaseSettings):
     # 系统配置
     DEBUG: bool = False
 
+    # CORS配置
+    cors_origins: str = "http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173,http://127.0.0.1:3000"
+
     # 读取 .env 文件
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
+    def get_cors_origins_list(self) -> list[str]:
+        """获取CORS origins列表"""
+        return [origin.strip() for origin in self.cors_origins.split(',')]
+
+
 # 实例化单例，供其他模块直接引用
 settings = Settings()
+
+def get_settings() -> Settings:
+    """获取配置实例"""
+    return settings

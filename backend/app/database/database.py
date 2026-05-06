@@ -25,7 +25,7 @@ def search_exercise_base(
     difficulty=None,
     name=None,
     limit=10,
-):
+) -> list[ExerciseBase]:
     conn = _get_connection()
     cursor = conn.cursor(dictionary=True)
 
