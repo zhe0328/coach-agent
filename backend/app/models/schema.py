@@ -33,6 +33,6 @@ class TrainingLogic(BaseModel):
 class CoachRecommendation(BaseModel):
     """Agent 最终输出的推荐结构"""
     user_intent: Dict
-    planned_exercises: List[ExerciseDetail]
+    planned_exercises: List[ExerciseBase] = []
     warmup_tips: str
     safety_notes: str

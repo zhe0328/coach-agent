@@ -1,10 +1,22 @@
 from fastapi import FastAPI, Query
+from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional
+from ..config import get_settings
 from ..services.coach_service import CoachService
 from ..models.schema import ExerciseBase, ExerciseDetail
 
+settings = get_settings()
+
 app = FastAPI()
 coach_service = CoachService()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.get_cors_origins_list(),
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # --- 数据库直接查询接口 ---
 
