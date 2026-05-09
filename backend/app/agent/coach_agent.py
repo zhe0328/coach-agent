@@ -6,8 +6,8 @@ from ..config import settings
 class CoachAgent:
     def __init__(self):
         self.client = OpenAI(
-            api_key=settings.OPENAI_API_KEY,
-            base_url=settings.OPENAI_BASE_URL
+            api_key=settings.DEEPSEEK_API_KEY,
+            base_url=settings.DEEPSEEK_BASE_URL
         )
         # 加载逻辑框架 SKILL.md
         self.skill_guide = self._load_skill_guide()

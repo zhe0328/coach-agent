@@ -12,6 +12,16 @@ class Settings(BaseSettings):
     # AI 配置
     OPENAI_API_KEY: str
     OPENAI_BASE_URL: Optional[str] = "https://openai.com"
+
+    DEEPSEEK_API_KEY: str
+    DEEPSEEK_BASE_URL: Optional[str] = "https://api.deepseek.com"
+
+    QDRANT_API_KEY: str
+    QDRANT_BASE_URL: Optional[str] = "https://xyz-example.eu-central.aws.cloud.qdrant.io"
+
+    NEO4J_BASE_URL: Optional[str] = "neo4j+ssc://xxx.databases.neo4j.io"
+    NEO4J_USERNAME: str
+    NEO4J_PASSWORD: str
     
     # 系统配置
     DEBUG: bool = False
