@@ -3,7 +3,7 @@ import mysql.connector
 from qdrant_client import QdrantClient
 from qdrant_client.models import VectorParams, Distance, PointStruct
 from openai import OpenAI
-from config import settings
+from ..app.config import settings
 
 
 class QdrantRAGSync:
