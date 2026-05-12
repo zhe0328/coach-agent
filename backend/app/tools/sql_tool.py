@@ -51,6 +51,9 @@ class SQLTool:
         final_sql += " LIMIT %s"
         query_params.append(params.limit)
 
+        print("final_sql: ", final_sql)
+        print("query_params: ", query_params)
+
         try:
             with self.db_manager.get_connection() as conn:
                 with conn.cursor(dictionary=True) as cursor:
@@ -141,21 +144,18 @@ async def test():
     sql_tool = SQLTool();
     print("search base")
     params = SQLSearchSchema(
-        target_zh="上背部",
-        category_zh="力量训练",
-        difficulty="advanced",
-        equipment_zh="自重",
-        body_part_zh="背部",
-        name_zh="自重前水平重复训练",
-        limit=5
+        difficulty="beginner",
+        equipment_zh="哑铃",
+        body_part_zh="腰腹",
+        limit=10
     )
     result1 = await sql_tool.search_exercise_base(params)
     print(result1)
 
-    print("----------")
+    # print("----------")
 
-    result2 = await sql_tool.search_exercise_detail("0012")
-    print(result2)
+    # result2 = await sql_tool.search_exercise_detail("0012")
+    # print(result2)
 
 if __name__ == "__main__":
     asyncio.run(test())

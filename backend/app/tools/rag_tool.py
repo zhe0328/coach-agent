@@ -113,7 +113,7 @@ class RAGTool:
 
 async def test():
     rag_tool = RAGTool()
-    params = RAGSearchSchema(query_text="核心 平衡", top_k=5)
+    params = RAGSearchSchema(query_text="前锯肌 训练 动作原理 发力方式", top_k=3)
     result = await rag_tool.search_knowledge(params)
     print(result)
 

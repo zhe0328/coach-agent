@@ -14,11 +14,11 @@ class GraphTool:
         if params.scenario == "injury_avoidance":
             return await self._avoid_injury(params.joint_name)
         elif params.scenario == "regression":
-            return await self._get_regression(params.exercise_id)
+            return await self._get_regression(params.exercise_name)
         elif params.scenario == "progression":
-            return await self._get_progression(params.exercise_id)
+            return await self._get_progression(params.exercise_name)
         elif params.scenario == "synergy":
-            return await self._get_synergistic_movements(params.exercise_id)
+            return await self._get_synergistic_movements(params.exercise_name)
         elif params.scenario == "strengthen_joint":
             return await self._strengthen_joint(params.joint_name)
 
@@ -32,38 +32,37 @@ class GraphTool:
             result = session.run(cypher, joint_name=joint_name)
             return [record.data() for record in result]
 
-    async def _get_regression(self, exercise_id: str):
+    async def _get_regression(self, exercise_name: str):
         """场景 2: 退让逻辑 —— 动作太难了，找更简单的替代品"""
         cypher = """
-        MATCH (e:Exercise {id: $ex_id})-[:REGRESSION_OF]->(easier:Exercise)
+        MATCH (e:Exercise {name: $ex_name})-[:REGRESSION_OF]->(easier:Exercise)
         RETURN easier.id as id, easier.name as name_zh
         """
         with self.db.get_session() as session:
-            result = session.run(cypher, ex_id=exercise_id)
+            result = session.run(cypher, ex_name=exercise_name)
             return [record.data() for record in result]
 
-    async def _get_progression(self, exercise_id: str):
+    async def _get_progression(self, exercise_name: str):
         """场景 3: 进阶逻辑 —— 动作太简单，挑战更难的"""
         cypher = """
-        MATCH (e:Exercise {id: $ex_id})-[:PROGRESSION_OF]->(harder:Exercise)
+        MATCH (e:Exercise {name: $ex_name})-[:PROGRESSION_OF]->(harder:Exercise)
         RETURN harder.id as id, harder.name as name_zh
         """
         with self.db.get_session() as session:
-            result = session.run(cypher, ex_id=exercise_id)
+            result = session.run(cypher, ex_name=exercise_name)
             return [record.data() for record in result]
 
-    async def _get_synergistic_movements(self, exercise_id: str):
+    async def _get_synergistic_movements(self, exercise_name: str):
         """场景 4: 协同逻辑 —— 练完这个，建议下一个练什么（利用协同肌）"""
         cypher = """
-        MATCH (e:Exercise {id: $ex_id})-[:SYNERGIST]->(m:Muscle)
+        MATCH (e:Exercise {name: $ex_name})-[:SYNERGIST]->(m:Muscle)
         MATCH (next:Exercise)-[:TARGETS {intensity: 'primary'}]->(m)
         RETURN next.id as id, next.name as name_zh, m.name as shared_muscle
         LIMIT 3
         """
         with self.db.get_session() as session:
-            result = session.run(cypher, ex_id=exercise_id)
+            result = session.run(cypher, ex_name=exercise_name)
             return [record.data() for record in result]
-
 
     async def _strengthen_joint(self, joint_name: str):
         """
@@ -83,11 +82,18 @@ class GraphTool:
             result = session.run(cypher, joint_name=joint_name)
             return [record.data() for record in result]
 
+
 async def test():
     graph_tool = GraphTool()
-    params = GraphReasoningSchema(exercise_id="0038", muscle_name="下腹部", joint_name="髋关节", scenario="strengthen_joint")
+    params = GraphReasoningSchema(
+        exercise_name="杠铃单腿分腿蹲",
+        muscle_name="下腹部",
+        joint_name="髋关节",
+        scenario="synergy",
+    )
     result = await graph_tool.reason(params)
     print(result)
+
 
 if __name__ == "__main__":
     asyncio.run(test())

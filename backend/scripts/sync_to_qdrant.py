@@ -15,9 +15,9 @@ class QdrantRAGSync:
             url=settings.QDRANT_BASE_URL,
             api_key=settings.QDRANT_API_KEY,
             cloud_inference=False,
-            timeout=120
+            timeout=120,
         )
-        self.collection_name = "exercises"
+        self.collection_name = "exercises_v2"
 
         # MySQL 连接
         self.db = mysql.connector.connect(
@@ -40,7 +40,10 @@ class QdrantRAGSync:
         """初始化 Qdrant 集合"""
         self.qdrant.recreate_collection(
             collection_name=self.collection_name,
-            vectors_config=VectorParams(size=1536, distance=Distance.COSINE),
+            vectors_config={
+                "header": VectorParams(size=1536, distance=Distance.COSINE),  # 权重 0.7
+                "detail": VectorParams(size=1536, distance=Distance.COSINE),  # 权重 0.3
+            },
         )
 
     def run_sync(self):
@@ -64,6 +67,8 @@ class QdrantRAGSync:
 
             # 1. 构造该批次的文本列表
             texts_to_embed = []
+            header_texts = []
+            detail_texts = []
             payloads = []
             ids = []
 
@@ -76,8 +81,14 @@ class QdrantRAGSync:
                 steps_text = " ".join(
                     [f"{j+1}.{step}" for j, step in enumerate(instructions)]
                 )
-                combined_text = f"动作：{row['name_zh']}。目标肌肉：{row['target_zh']}。器材：{row['equipment_zh']}。描述：{row['description_zh']}。步骤：{steps_text}"
-                texts_to_embed.append(combined_text)
+                # combined_text = f"动作：{row['name_zh']}。目标肌肉：{row['target_zh']}。器材：{row['equipment_zh']}。描述：{row['description_zh']}。步骤：{steps_text}"
+                header_text = f"动作名称：{row['name_zh']}。目标肌肉：{row['target_zh']}。器材：{row['equipment_zh']}。效果和描述：{row['description_zh']}。"
+                detail_text = f"执行步骤：{steps_text}"
+
+                header_texts.append(header_text)
+                detail_texts.append(detail_text)
+
+                # texts_to_embed.append(combined_text)
                 ids.append(int(row["id"]))
                 payloads.append(
                     {
@@ -85,22 +96,37 @@ class QdrantRAGSync:
                         "target_zh": row["target_zh"],
                         "equipment_zh": row["equipment_zh"],
                         "difficulty": row["difficulty"],
-                        "content": combined_text,
+                        "content": header_text + detail_text 
                     }
                 )
 
             # 2. 批量获取向量 (加速 10x)
             print(f"正在向量化批次 {i//batch_size + 1}...")
-            embeddings_response = self.client.embeddings.create(
-                input=texts_to_embed, model="text-embedding-3-small"
+            header_response = self.client.embeddings.create(
+                input=header_texts, model="text-embedding-3-small"
             )
-            vectors = [data.embedding for data in embeddings_response.data]
+            header_vectors = [d.embedding for d in header_response.data]
+
+            # 获取 Detail 向量组
+            detail_response = self.client.embeddings.create(
+                input=detail_texts, model="text-embedding-3-small"
+            )
+            detail_vectors = [d.embedding for d in detail_response.data]
 
             # 3. 构造 PointStruct 列表
-            points = [
-                PointStruct(id=ids[j], vector=vectors[j], payload=payloads[j])
-                for j in range(len(ids))
-            ]
+            points = []
+            for j in range(len(ids)):
+                points.append(
+                    PointStruct(
+                        id=ids[j],
+                        # 注意：这里的 vector 变成了一个 dict，key 必须与你创建 collection 时一致
+                        vector={
+                            "header": header_vectors[j],
+                            "detail": detail_vectors[j],
+                        },
+                        payload=payloads[j],
+                    )
+                )
 
             # 4. 上传到 Qdrant (此时 points 已在内存，上传极快)
             print(f"正在上传到 Qdrant...")
