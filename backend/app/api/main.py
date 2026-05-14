@@ -59,7 +59,6 @@ async def get_exercise(exercise_id: str):
 
 # --- AI 对话接口 ---
 
-
 @app.post("/v1/chat")
 async def chat_endpoint(request: ChatRequest):
     """
@@ -78,7 +77,6 @@ async def chat_endpoint(request: ChatRequest):
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream")
-
 
 # 传统的非流式接口 (用于简单测试或低频场景)
 @app.post("/v1/chat/static")
