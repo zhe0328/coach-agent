@@ -20,6 +20,10 @@ class GraphReasoningSchema(BaseModel):
     scenario: Literal[
         "injury_avoidance", "progression", "regression", "synergy", "strengthen_joint"
     ]
+    candidate_ids: Optional[List[str]] = Field(
+        default=None, 
+        description="系统并行拦截引擎动态注入的候选动作 ID 列表，大模型在 Planner 阶段【无需手动填充】"
+    )
 
 
 class ExerciseFields(BaseModel):
@@ -52,11 +56,16 @@ class ExerciseDetail(ExerciseBase):
 
 
 class ToolTask(BaseModel):
+    task_id: str
     tool: Literal["sql_tool", "graph_tool", "rag_tool"]
     sql_params: Optional[SQLSearchSchema] = None
     rag_params: Optional[RAGSearchSchema] = None
     graph_params: Optional[GraphReasoningSchema] = None
     reason: str = Field(..., description="选择该工具的原因")
+    depends_on: Optional[List[str]] = Field(
+        default=[], 
+        description="本任务依赖的其他 task_id 列表。只有当这些任务执行完，本任务才能启动并读取它们的数据。"
+    )
 
 
 class IntentPlan(BaseModel):
@@ -94,7 +103,7 @@ class CoachResponse(BaseModel):
     greeting: str = Field(..., description="开场白")
     
     # 场景 A：精准动作推荐 (SQL/GraphRAG 产出)
-    exercises: Optional[List[ExerciseBase]] = Field(
+    exercises: Optional[List[ExerciseDetail]] = Field(
         None, description="动作卡片列表，若是纯知识回答则为 None"
     )
     
