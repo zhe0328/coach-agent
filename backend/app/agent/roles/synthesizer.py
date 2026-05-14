@@ -40,6 +40,9 @@ class CoachSynthesizer:
         {context_str}
         
         请根据以上信息，生成最终的教练建议：
+        
+        ## 格式绝对禁止
+        严禁在生成的文本中包含任何形如 `\u001b[32m`的终端颜色控制字符（ANSI Escape Codes）。统一且仅能使用标准的 Markdown 加粗语法, 各段落间不需要额外空行。
         """
 
         # 4. 调用强模型生成 (支持 Streaming 更好)

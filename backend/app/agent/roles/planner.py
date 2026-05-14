@@ -5,8 +5,17 @@ class PlannerAgent:
         self.client = client
         self.skill_guide = skill_guide
 
-    async def plan(self, user_input: str) -> FullPlan:
+    async def plan(self, user_input: str, feedback: str = "") -> FullPlan:
+        feedback_section = ""
+        if feedback:
+            feedback_section = f"""
+            ⚠️【来自上一轮执行的反思纠错指令 - 请最高优先级遵守】：
+            {feedback}
+            根据上述反馈，请立刻调整你的决策逻辑，修正工具参数或补充缺失的工具调用！
+            """
         system_prompt = """你是一个专业的健身训练调度员。你的任务是根据用户的需求，从三个专业工具中选择最合适的组合。
+
+            {feedback_section}
 
             【核心教练逻辑】
             {self.skill_guide}
@@ -20,6 +29,15 @@ class PlannerAgent:
             - name_zh: 仅当用户提到具体的动作名称（如“卧推”、“深蹲”）时填写。不要把部位填在这里。
             - target_zh/body_part_zh: 只有用户明确说了“练哪里”才填。
             - category_zh: 除非用户明确说“有氧”或“力量”，否则不填。
+
+            【任务依赖生成指南 (Topological Dependency Rules)】
+            - 默认情况下，所有任务都是【并行的】，它们不互相依赖，`depends_on` 应保持为空数组 `[]`。
+            - 【关键串行场景】：当且仅当发生“伤病规避”或“动作切换”需要调用 graph_tool，且同时需要针对用户匹配动作调用 sql_tool 时。
+            - 逻辑如下：graph_tool 为了避免返回成百上千个无关动作导致上下文冗余，【必须】等待 sql_tool 查出候选动作后进行定点裁剪。
+            - 在此场景下：
+            1. 为 sql_tool 任务赋予固定的标识：`task_id: "task_sql_base"`
+            2. 为 graph_tool 任务赋予标识：`task_id: "task_graph_injury"`
+            3. 【强行约束】：必须将 graph_tool 的 `depends_on` 字段声明为 `["task_sql_base"]`。
 
             【核心分发逻辑 - 按优先级排序】
 
