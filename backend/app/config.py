@@ -22,6 +22,10 @@ class Settings(BaseSettings):
     NEO4J_BASE_URL: Optional[str] = "neo4j+ssc://xxx.databases.neo4j.io"
     NEO4J_USERNAME: str
     NEO4J_PASSWORD: str
+
+    LLM_MODEL_NAME: str
+
+    DASHSCOPE_API_KEY: str
     
     # 系统配置
     DEBUG: bool = False

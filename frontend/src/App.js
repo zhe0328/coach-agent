@@ -1,52 +1,73 @@
 import { useState, useRef, useEffect } from "react";
 import ChatMessage from "./components/ChatMessage";
 import ChatInput from "./components/ChatInput";
-import ExerciseModal from "./components/ExerciseModal";
 import { exerciseApi } from "./api/exercise";
 import "./App.css";
 
 const WELCOME = {
   id: "welcome",
   role: "coach",
-  content:
-    "Hi! I'm your personal fitness coach.\n\nTell me about your goals, available equipment, fitness level, or any injuries — I'll put together a workout plan tailored to you.",
-  exercises: [],
+  // 模拟一个简单的结构化对象，保持组件渲染一致性
+  content: {
+    greeting: "你好！我是你的专属 AI 健身教练。",
+    detailed_guidance: "告诉我的你的健身目标、可用器材、体能水平或任何伤病情况 —— 我将为你量身定制训练计划。",
+    response_type: "knowledge"
+  },
 };
 
 export default function App() {
   const [messages, setMessages] = useState([WELCOME]);
   const [isLoading, setIsLoading] = useState(false);
-  const [selectedExerciseId, setSelectedExerciseId] = useState(null);
   const bottomRef = useRef(null);
 
+  // 自动滚动到底部
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, isLoading]);
 
   const sendMessage = async (text) => {
+    if (!text.trim()) return;
+
+    // 1. 添加用户消息
     const userMsg = { id: Date.now(), role: "user", content: text };
     setMessages((prev) => [...prev, userMsg]);
+    
     setIsLoading(true);
+    const user_id = 123; // 实际项目中应来自 Auth 上下文
 
     try {
-      const data = await exerciseApi.getAiRecommendation(text);
+      // 2. 调用后端 Orchestrator 接口
+      const responseStr = await exerciseApi.getAiRecommendation(user_id, text);
+      
+      // 关键步骤：解析字符串为 JSON 对象
+      let data;
+      try {
+        data = typeof responseStr === 'string' ? JSON.parse(responseStr) : responseStr;
+      } catch (e) {
+        console.error("JSON 解析失败:", e);
+        throw new Error("数据格式错误");
+      }
+      
+      // 3. 构造教练消息对象 (存储完整的结构化 CoachResponse)
       const coachMsg = {
         id: Date.now() + 1,
         role: "coach",
-        content: data.warmup_tips || "Here's a plan based on your request:",
-        safetyNote: data.safety_notes || null,
-        exercises: data.planned_exercises ?? [],
+        content: data, // 这是一个包含 response_type, exercises, safety_alerts 等的对象
       };
+      
       setMessages((prev) => [...prev, coachMsg]);
-    } catch {
+    } catch (error) {
+      console.error("Chat Error:", error);
       setMessages((prev) => [
         ...prev,
         {
           id: Date.now() + 1,
           role: "coach",
-          content:
-            "Sorry, I couldn't reach the server. Please make sure the backend is running and try again.",
-          exercises: [],
+          content: {
+            greeting: "出错了...",
+            detailed_guidance: "抱歉，服务器连接失败。请检查后端是否正常运行后重试。",
+            response_type: "knowledge"
+          }
         },
       ]);
     } finally {
@@ -62,7 +83,7 @@ export default function App() {
             <span className="logo-icon">◈</span>
             <span className="logo-text">CoachAgent</span>
           </div>
-          <span className="header-tag">AI Fitness Coach</span>
+          <span className="header-tag">专业级 AI 教练</span>
         </div>
       </header>
 
@@ -72,7 +93,7 @@ export default function App() {
             <ChatMessage
               key={msg.id}
               message={msg}
-              onExerciseClick={setSelectedExerciseId}
+              // 注意：此时不再需要传递 onExerciseClick，因为渲染逻辑已下沉到 Recommendation 内部
             />
           ))}
           {isLoading && <TypingIndicator />}
@@ -81,13 +102,6 @@ export default function App() {
       </main>
 
       <ChatInput onSend={sendMessage} disabled={isLoading} />
-
-      {selectedExerciseId && (
-        <ExerciseModal
-          exerciseId={selectedExerciseId}
-          onClose={() => setSelectedExerciseId(null)}
-        />
-      )}
     </div>
   );
 }
@@ -95,11 +109,12 @@ export default function App() {
 function TypingIndicator() {
   return (
     <div className="message coach">
-      <span className="message-label">Coach</span>
-      <div className="typing-indicator">
-        <span />
-        <span />
-        <span />
+      <div className="message-bubble typing-bubble">
+        <div className="typing-indicator">
+          <span />
+          <span />
+          <span />
+        </div>
       </div>
     </div>
   );
