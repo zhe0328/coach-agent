@@ -9,6 +9,11 @@ from ..tools.sql_tool import SQLTool
 from ..tools.rag_tool import RAGTool
 from ..tools.graph_tool import GraphTool
 from ..models.schema import ToolTask, FullPlan
+import mysql.connector
+import httpx
+from neo4j.exceptions import DriverError, Neo4jError, ServiceUnavailable
+from chromadb.errors import ChromaError
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 
 class CoachOrchestrator:
@@ -22,33 +27,70 @@ class CoachOrchestrator:
         self.graph_tool = GraphTool()
         self.client = client
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=4),
+        # 只有遇到网络连接异常、API 超时、或者数据库断连时才触发真正重试，业务逻辑错（如参数不对）不触发重试
+        retry=retry_if_exception_type((# 1. MySQL 核心网络与连接抖动异常 (排除语法错误)
+            mysql.connector.errors.OperationalError,
+            mysql.connector.errors.InterfaceError,
+            
+            # 2. Neo4j 核心驱动崩溃、套接字失联、网络不可达异常
+            DriverError,
+            ServiceUnavailable, # 导入自 neo4j.exceptions
+            
+            # 3. ChromaDB 底层 SQLite 本地文件锁死或 I/O 线程冲突
+            ChromaError,
+            
+            # 4. 网络瞬时丢包或 HTTP 502/504 超时
+            httpx.TimeoutException,
+            httpx.NetworkError)),
+        reraise=False # 重试 3 次依然失败后，不崩掉整个进程，而是向上跑进 except 容灾块
+    )
+    async def _execute_with_retry(self, task: ToolTask):
+        """内部高解耦高吞吐重试原子核"""
+        if task.tool == "sql_tool" and task.sql_params:
+            return {
+                "type": "sql",
+                "data": await self.sql_tool.search_exercise_base(task.sql_params),
+            }
+
+        elif task.tool == "rag_tool" and task.rag_params:
+            return {
+                "type": "rag",
+                "data": await self.rag_tool.search_knowledge(task.rag_params),
+            }
+
+        elif task.tool == "graph_tool" and task.graph_params:
+            return {
+                "type": "graph",
+                "data": await self.graph_tool.reason(task.graph_params),
+            }
+        return None
+
     async def dispatch_tool(self, task: ToolTask):
         """
         工具分发路由：根据不同的 Schema 动态调用
         """
         try:
-            if task.tool == "sql_tool" and task.sql_params:
-                print("sql_tool is called")
-                return {
-                    "type": "sql",
-                    "data": await self.sql_tool.search_exercise_base(task.sql_params),
-                }
-
-            elif task.tool == "rag_tool" and task.rag_params:
-                return {
-                    "type": "rag",
-                    "data": await self.rag_tool.search_knowledge(task.rag_params),
-                }
-
-            elif task.tool == "graph_tool" and task.graph_params:
-                return {
-                    "type": "graph",
-                    "data": await self.graph_tool.reason(task.graph_params),
-                }
-        except Exception as e:
-            # JD 1 要求：错误容灾机制
-            print(f"Tool {task.tool} failed: {e}")
-            return {"type": task.tool, "error": str(e)}
+            logger.info(f"{LogColor.TOOL}[ToolDispatcher] 发起高稳定性工具调度: 【{task.task_id} ({task.tool})】...{LogColor.RESET}")
+            
+            # 1. 投流进入多维级联重试黑科技管道
+            result = await self._execute_with_retry(task)
+            
+            if result is None:
+                raise ValueError(f"未识别的工具类型或参数缺失: {task.tool}")
+            return result
+        except (mysql.connector.Error, Neo4jError, Exception) as e:
+            # 💡【柔性熔断熔断舱（Graceful Degradation Airbag）】
+            # 当经历 3 次重试仍旧因为网络故障崩溃，或者由于大模型参数幻觉引发硬报错（如 SQL 语法写错时）
+            # 外部的 except 块会瞬间将其捕获。
+            logger.error(
+                f"{LogColor.TOOL}[ToolDispatcher] ❌ 严重预警：工具 【{task.task_id}】 经历 3 次指数重试后依旧崩溃！"
+                f"参考异常: {e}。系统启动柔性退化防御，向状态机透传空资产...{LogColor.RESET}"
+            )
+            # 返回标准的空契约格式，防止下游 Pydantic 解析报错
+            return {"type": task.tool, "data": [], "error": str(type(e).__name__)}
 
     async def run_plan(self, plan: FullPlan):
         """

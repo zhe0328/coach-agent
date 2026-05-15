@@ -129,7 +129,7 @@ class RAGTool:
         except Exception as e:
             logger.error(f"[RAGTool] 强类型语义检索管线崩溃: {e}")
             # 工业级容灾防御：报错时不抛异常阻断，而是返回空列表，让系统降级运行
-            return []
+            raise e
 
 
 async def test():

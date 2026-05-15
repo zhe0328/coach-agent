@@ -146,5 +146,44 @@ class PlanAnalyzer:
             return analysis.is_complete, analysis.feedback
             
         except Exception as e:
-            logger.error(f"[Analyzer] 质检内核运行突发崩溃，启动容灾放行: {e}")
-            return True, ""
+            # ==================== 【🔥 大厂级亮点：自适应工具感知 Fallback 机制】 ====================
+            logger.error(f"[Analyzer] 🚨 严重警报：质检大模型内核突发崩溃/断连！原因: {e}。启动自适应隔离...")
+            
+            # 1. 动态获取本轮真正执行过的工具活性状态，作为自适应分流的最强线索
+            has_sql_tool_called = any(r.get("type") == "sql" for r in tool_results)
+            has_rag_tool_called = any(r.get("type") == "rag" for r in tool_results)
+            has_graph_tool_called = any(r.get("type") == "graph" for r in tool_results)
+
+            # 2. 如果基础 SQL 动作资产完备，或者独立的 RAG/Graph 已经拿到了背景干货，直接通过
+            if has_sql_data or (has_rag_tool_called and not has_sql_tool_called):
+                logger.warning(f"{LogColor.ANALYZER}[Analyzer] 🛡️ [Fail-Safe] 检测到核心资产已召回，允许带伤放行走向合成层。{LogColor.RESET}")
+                return True, ""
+                
+            # 3. 如果底层全面查空且内核崩溃（双空现象），启动精确分流反思自愈
+            fallback_feedback = ""
+            
+            if has_graph_tool_called:
+                # 场景 A：图工具崩了或查空时的保守指令
+                fallback_feedback = (
+                    "【Analyzer内核灾难恢复反馈】：质检内核离线且图生理逻辑数据异常。为了绝对防范运动伤害，"
+                    "请 Planner 在下一轮迭代中，【最高优先级】重新检查并微调 graph_params 的 joint_name 或 scenario 字段，"
+                    "确保降阶、退让、平替或关节强化逻辑在代码层能够顺利执行！"
+                )
+            elif has_rag_tool_called:
+                # 场景 B：纯知识库百科检索查空时的保守指令
+                fallback_feedback = (
+                    "【Analyzer内核灾难恢复反馈】：质检内核离线且 RAG 知识百科召回为空。"
+                    "请 Planner 在下一轮迭代中，【最高优先级】精简并重构 rag_tool 的 query_text 参数，"
+                    "剔除所有主观语气长句子，仅保留高度浓缩的‘核心动作名+发力感’或‘肌肉群+呼吸方式’关键词，以校正向量查找方向！"
+                )
+            else:
+                # 场景 C：传统的 SQL 条件筛选查空时的保守指令
+                fallback_feedback = (
+                    "【Analyzer内核灾难恢复反馈】：质检内核离线且 SQL 基础动作资产查空。"
+                    "为了建立数据支柱，请 Planner 在下一轮迭代中，【最高优先级】完全解除所有关于器械、难度等主观脑补过滤条件，"
+                    "强行放大 sql_params.limit 至 15，执行最大范围的基准动作库唤醒，确保响应有据可查！"
+                )
+
+            logger.warning(f"{LogColor.ANALYZER}[Analyzer] 🛡️ [Fail-Safe] 触发自适应条件裁剪！拒绝放行，强行将【{task.tool if 'task' in locals() else 'Current'}】反思指令灌回状态机！{LogColor.RESET}")
+            return False, fallback_feedback
+

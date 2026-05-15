@@ -59,7 +59,7 @@ class SQLTool:
                     rows = cursor.fetchall()
         except mysql.connector.Error as err:
             print(f"Database Error: {err}")
-            return []
+            raise err
         results = []
         for row in rows:
             results.append(
@@ -114,7 +114,7 @@ class SQLTool:
                     secondary_rows = cursor.fetchall()
         except mysql.connector.Error as err:
             print(f"Database Error: {err}")
-            return []
+            raise err
         secondary_muscles_zh = [r["name_zh"] for r in secondary_rows]
 
         instructions_zh = row["instructions_zh"]
