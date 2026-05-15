@@ -24,6 +24,8 @@ class Settings(BaseSettings):
     NEO4J_PASSWORD: str
 
     LLM_MODEL_NAME: str
+
+    DASHSCOPE_API_KEY: str
     
     # 系统配置
     DEBUG: bool = False

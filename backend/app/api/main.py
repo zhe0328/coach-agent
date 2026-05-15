@@ -58,7 +58,6 @@ async def get_exercise(exercise_id: str):
 
 
 # --- AI 对话接口 ---
-
 @app.post("/v1/chat")
 async def chat_endpoint(request: ChatRequest):
     """

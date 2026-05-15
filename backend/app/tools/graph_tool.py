@@ -9,7 +9,7 @@ logger = logging.getLogger("CoachAgent")
 
 class GraphTool:
     def __init__(self):
-        self.db = Neo4jManager
+        self.db = Neo4jManager()
 
     async def reason(self, params: GraphReasoningSchema):
         """

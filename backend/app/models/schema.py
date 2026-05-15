@@ -36,7 +36,7 @@ class ExerciseFields(BaseModel):
 
 
 class SQLSearchSchema(ExerciseFields):
-    limit: int = Field(3, description="返回动作的数量限制")
+    limit: int = Field(default=10, description="返回动作的数量限制")
 
 
 class ExerciseBase(ExerciseFields):

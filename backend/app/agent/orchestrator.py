@@ -145,7 +145,7 @@ class CoachOrchestrator:
 
     async def execute(self, user_input: str):
         current_step = 0
-        max_loops = 2  # 设置安全最大尝试次数（大厂通常设为 2-3 次，平衡效果与延迟）
+        max_loops = 3  # 设置安全最大尝试次数（大厂通常设为 2-3 次，平衡效果与延迟）
         feedback = ""  # 初始反思为空
         tool_results = []
         last_logic_chain = ""

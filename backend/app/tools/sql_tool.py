@@ -48,11 +48,9 @@ class SQLTool:
         if where_clauses:
             final_sql += " WHERE " + " AND ".join(where_clauses)
 
+        calculated_limit = max(params.limit * 3, 12)
         final_sql += " LIMIT %s"
-        query_params.append(params.limit)
-
-        print("final_sql: ", final_sql)
-        print("query_params: ", query_params)
+        query_params.append(calculated_limit)
 
         try:
             with self.db_manager.get_connection() as conn:
@@ -75,6 +73,7 @@ class SQLTool:
                     category_zh=row["category_zh"],
                 )
             )
+        print("[SQL Result Length]: ", len(results))
         return results
 
     async def search_exercise_detail(
