@@ -1,7 +1,6 @@
 import asyncio
 from .roles.macroPlanner import MacroPlannerAgent
 from .roles.smallPlanner import SmallPlannerAgent
-from .roles.planner import PlannerAgent
 from .roles.synthesizer import CoachSynthesizer
 from .analyzer import PlanAnalyzer
 from .router import WorkflowRouter
@@ -28,7 +27,6 @@ class CoachOrchestrator:
     def __init__(self, client):
         self.macroPlanner = MacroPlannerAgent(client)
         self.smallPlanner = SmallPlannerAgent(client)
-        self.planner = PlannerAgent(client, get_skill_by_node("planner"))
         self.synthesizer = CoachSynthesizer(client, get_skill_by_node("synthesizer"))
         self.analyzer = PlanAnalyzer(client)
         self.router = WorkflowRouter()
