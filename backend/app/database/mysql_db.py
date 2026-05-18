@@ -1,7 +1,3 @@
-import mysql.connector
-from ..config import settings
-
-
 import mysql.connector.pooling
 from app.config import settings
 

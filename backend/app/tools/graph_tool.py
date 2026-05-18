@@ -2,9 +2,6 @@ from app.database.neo4j_db import Neo4jManager
 from app.models.schema import GraphReasoningSchema
 from typing import List, Dict, Any
 import asyncio
-import logging
-
-logger = logging.getLogger("CoachAgent")
 
 
 class GraphTool:

@@ -11,7 +11,10 @@ class RAGSearchSchema(BaseModel):
         ..., description="用户的健身问题，例如'如何缓解久坐腰痛'、'波比跳怎么做'"
     )
     top_k: int = Field(3, description="检索相关的知识条目数量")
-
+    intent: Literal["exercise", "knowledge", "mixed"] = Field(
+        ..., 
+        description="exercise: 仅查询特定动作实操/发力感; knowledge: 查询动作组合逻辑/生理机制/课表编排/疲劳等理论; mixed: 两者皆有"
+    )
 
 class GraphReasoningSchema(BaseModel):
     exercise_name: Optional[str] = Field(None, description="动作名称")
@@ -53,6 +56,22 @@ class ExerciseDetail(ExerciseBase):
     description_zh: Optional[str] = None
     gif_path: Optional[str] = None
     rag_content: Optional[str] = None
+    data_type: Literal["exercise"] = "exercise"
+
+class ToolCallIntent(BaseModel):
+    task_id: str = Field(..., description="如 task_sql_base, task_graph_injury, task_rag_query")
+    tool_name: Literal["sql_tool", "graph_tool", "rag_tool"]
+    rag_intent: Optional[Literal["exercise", "knowledge", "mixed"]] = Field(None, description="仅当 tool_name 为 rag_tool 时必填")
+    depends_on: Optional[List[str]] = Field(
+        default=[], 
+        description="本任务依赖的其他 task_id 列表。只有当这些任务执行完，本任务才能启动并读取它们的数据。"
+    )
+    reason: str = Field(default="", description="选择该工具的原因")
+    focused_query: str = Field(..., description="针对该工具剥离噪音后的定向用户提问切片（如：'用哑铃练胸'）")
+
+class MacroPlanSchema(BaseModel):
+    selected_tools: List[ToolCallIntent] = Field(..., description="选装的工具链拓扑图")
+    routing_reason: str = Field(..., description="做出该工具组合选择的简短依据")
 
 
 class ToolTask(BaseModel):
@@ -61,34 +80,27 @@ class ToolTask(BaseModel):
     sql_params: Optional[SQLSearchSchema] = None
     rag_params: Optional[RAGSearchSchema] = None
     graph_params: Optional[GraphReasoningSchema] = None
-    reason: str = Field(..., description="选择该工具的原因")
+    reason: str = Field(default="", description="选择该工具的原因")
     depends_on: Optional[List[str]] = Field(
         default=[], 
         description="本任务依赖的其他 task_id 列表。只有当这些任务执行完，本任务才能启动并读取它们的数据。"
     )
 
-
-class IntentPlan(BaseModel):
-    """Planner 输出的执行蓝图"""
-
-    tasks: List[ToolTask]
-    rag_keywords: Optional[str] = Field(
-        None, description="如果涉及 RAG，压缩后的关键词"
-    )
-    logic_chain: str = Field(..., description="Agent 的思考链条 (CoT)")
-
+class KnowledgeChunk(BaseModel):
+    """高密度生理学、组合原理与文献理论模型"""
+    id: str
+    source_book: str = Field(..., description="图书或文献来源文件名")
+    chapter_title: str = Field(..., description="所属章节或宏观主题")
+    category: str = Field("physiology_and_logic", description="知识分类")
+    core_principles: List[str] = Field(default_factory=list, description="该切片命中的核心生理学/组合机制标签")
+    content: str = Field(..., description="未经魔改的教科书高密度原文文本")
+    cosine_similarity: float = Field(..., description="向量匹配的绝对余弦相似度")
+    data_type: Literal["knowledge"] = "knowledge"  # 👈 显式类型判别器
 
 class FullPlan(BaseModel):
     tasks: List[ToolTask]
     logic_chain: str = Field(..., description="总体的推理思路")
 
-
-class TrainingLogic(BaseModel):
-    """动作的教练逻辑扩展（为 SKILL.md 准备）"""
-
-    progression_ids: List[str] = []  # 进阶动作 ID 列表
-    regression_ids: List[str] = []  # 退让动作 ID 列表
-    contraindications: List[str] = []  # 禁忌症 (如：腰痛禁做)
 
 class CoachResponse(BaseModel):
     """
