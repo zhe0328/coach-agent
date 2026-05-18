@@ -1,6 +1,7 @@
 from openai import OpenAI
+from ..prompts.skill_guide import SYNTHESIZER_SKILL
 from ...config import settings
-from ...models.schema import CoachResponse
+from ...models.schema import CoachResponse, MacroPlanSchema, ToolTask
 
 class CoachSynthesizer:
     def __init__(self, client, skill_guide):
@@ -8,68 +9,100 @@ class CoachSynthesizer:
         self.model = settings.LLM_MODEL_NAME
         self.skill_guide = skill_guide
 
-    async def generate_response(self, user_input: str, tool_outputs: list, logic_chain: str):
+    def _generate_prompts(self, macro_plan: MacroPlanSchema, executed_tasks: list):
         """
-        JD 亮点：结合多路检索结果与 SKILL.md 生成专业回复
-        tool_outputs 格式: [{"type": "sql", "data": [...]}, {"type": "graph", "data": [...]}]
+        流式话术合成官：【终极对齐版】
+        通过完全结构化的任务切片与子原因，强行让大模型拥有 100% 绝对安全的场景辨识指纹！
         """
+        xml_context_parts = []
         
-        # 1. 格式化上下文
-        context_str = self._format_context(tool_outputs)
-        print("context_str:")
-        print(context_str)
-        
-        # 2. 构造 System Prompt (注入 SKILL.md)
-        system_prompt = f"""
-        你是一位具备生理学背景的资深体能教练。
-        
-        【执行准则】
-        {self.skill_guide}
-        
-        【任务要求】
-        请结合检索到的动作数据和安全逻辑，为用户生成建议。
+        # 1. 遍历上游执行完毕、且通过了 Analyzer 质检的具名多任务报告
+        print("total tasks in synthesizer: ", len(executed_tasks))
+        for task in executed_tasks:
+            t_id = task.get("task_id")
+            t_name = task.get("tool_name")
+            t_reason = task.get("reason")          # 👈 大指挥官为该任务下的特定密令
+            f_query = task.get("focused_query")    # 👈 大指挥官裁剪好的纯净提问切片
+            raw_data = task.get("data", [])
+            
+            if t_name == "sql_tool":
+                exe_xml_blocks = []
+                for exe in raw_data:
+                    if isinstance(exe, dict): # 已经完成二级回填的满血字典
+                        exe_xml_blocks.append(
+                            f"  - 动作实体 [ID: {exe['id']}]\n"
+                            f"    名称: {exe['name_zh']}\n"
+                            f"    目标肌肉: {exe['target_zh']}\n"
+                            f"    所需器械: {exe['equipment_zh']}\n"
+                            f"    难度: {exe['difficulty']}\n"
+                            f"    发力简介: {exe['description_zh']}\n"
+                            f"    官方标准步骤: {' || '.join(exe['instructions_zh'])}\n"
+                        )
+                xml_context_parts.append(
+                    f"<已核准安全动作资产 task_id='{t_id}'>\n"
+                    f"  [此任务专属核心诉求]: {f_query}\n"
+                    f"  [指挥官编排原因]: {t_reason}\n"
+                    f"  [官方百科严密定义的动作属性库]:\n" + "\n".join(exe_xml_blocks) + "\n"
+                    f"</已核准安全动作资产>"
+                )
+                
+            elif t_name == "rag_tool":
+                # 区分 RAG 的动作百科和文献
+                rag_details = []
+                for item in raw_data:
+                    if getattr(item, "data_type", "exercise") == "exercise":
+                        rag_details.append(f"动作要领: {item.description_zh} | 步骤: {'/'.join(item.instructions_zh)}")
+                    else:
+                        rag_details.append(f"文献机制: {item.content}")
+                        
+                xml_context_parts.append(
+                    f"<外部权威科学文献背景 task_id='{t_id}'>\n"
+                    f"  [此任务专属核心诉求]: {f_query}\n"
+                    f"  [知识检索原因]: {t_reason}\n"
+                    f"  [召回干货支持]: {' || '.join(rag_details)}\n"
+                    f"</外部权威科学文献背景>"
+                )
+                
+            elif t_name == "graph_tool":
+                xml_context_parts.append(
+                    f"<生理力学安全拦截与进退阶路径 task_id='{t_id}'>\n"
+                    f"  [此任务专属伤病诉求]: {f_query}\n"
+                    f"  [图谱推理原因]: {t_reason}\n"
+                    f"  [安全防线建立数据]: {str(raw_data)}\n"
+                    f"</生理力学安全拦截与进退阶路径>"
+                )
+
+            # 2. 动态读取并拼接你在 skill_guide.py 里的 COACH_PERSONA 和 PROGRAMMING_LOGIC
+            # 此时，SYNTHESIZER_SYSTEM_TEMPLATE 里的 {context_data} 会被无缝替换为干净的多任务 XML 资产包
+            final_system_prompt = SYNTHESIZER_SKILL.format(
+                context_data="\n\n".join(xml_context_parts)
+            )
+            
+            # 3. 构造极度纯净的 User Prompt，不再给大模型留任何脑补和分心的空间
+            final_user_prompt = (
+                f"【宏观决策链逻辑总纲】:\n\"{macro_plan.routing_reason}\"\n\n"
+                f"请严格基于上述被 XML 隔离的多任务高密度资产包，践行你的教练人格，"
+                f"为用户产出一份因果逻辑严密、执教口令清晰、且绝对规避伤病风险的流式金牌训练指导："
+            )
+
+        return final_system_prompt, final_user_prompt
+
+
+    async def generate_response(self, macro_plan: MacroPlanSchema, executed_tasks: list):
+        """
+        结合多路检索结果与 SKILL.md 生成专业回复
         """
 
-        # 3. 构造 User Prompt
-        user_prompt = f"""
-        用户的问题: "{user_input}"
-        
-        编排器思考路径: {logic_chain}
-        
-        检索到的原始信息:
-        {context_str}
-        
-        请根据以上信息，生成最终的教练建议：
-        
-        ## 格式绝对禁止
-        严禁在生成的文本中包含任何形如 `\u001b[32m`的终端颜色控制字符（ANSI Escape Codes）。统一且仅能使用标准的 Markdown 加粗语法, 各段落间不需要额外空行。
-        """
+        final_system_prompt, final_user_prompt = self._generate_prompts(macro_plan, executed_tasks)
 
-        # 4. 调用强模型生成 (支持 Streaming 更好)
         response = self.client.chat.completions.parse(
             model=self.model,
             messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
+                {"role": "system", "content": final_system_prompt},
+                {"role": "user", "content": final_user_prompt}
             ],
             temperature=0.7, # 保持一定的教练亲和力
             response_format=CoachResponse
         )
         
         return response.choices[0].message.content
-
-    def _format_context(self, outputs: list) -> str:
-        """将不同工具的输出归一化为 LLM 可理解的文本块"""
-        formatted = []
-        for out in outputs:
-            t = out["type"]
-            data = out.get("data")
-            
-            if t == "sql":
-                formatted.append(f"[基础动作库结果]: {data}")
-            elif t == "rag":
-                formatted.append(f"[深度动作百科/步骤]: {data}")
-            elif t == "graph":
-                formatted.append(f"[生理逻辑/伤病风险提示]: {data}")
-        
-        return "\n".join(formatted)

@@ -40,11 +40,17 @@ SAFETY_GUARDRAILS = """
 """
 
 # 聚合导出：用于 Synthesizer 生成最终回复
-SKILL_MD_CONTENT = f"""
+SYNTHESIZER_SKILL = f"""
 {COACH_PERSONA}
-{ASSESSMENT_LOGIC}
 {PROGRAMMING_LOGIC}
-{SAFETY_GUARDRAILS}
+
+【终极核心死命令：100% 任务清算铁律】
+你必须对下方 XML 资产包中出现的【每一个】任务节点（无论是已核准安全动作、外部科学文献、还是生理力学安全拦截）执行【逐一响应】！
+你【绝对禁止】只打包回答宏观需求，而忽略微观任务。你的最终回复长文中，必须包含对【每一个】`[此任务专属核心诉求/focused_query]` 的正面回应和发力技巧注入。若敢漏掉任何一项，系统将判定你严重失职！
+
+### 运行时动态注入的核心资产包 (Context)
+{{context_data}}
+
 """
 
 
@@ -53,6 +59,6 @@ def get_skill_by_node(node_name: str) -> str:
     mapping = {
         "planner": ASSESSMENT_LOGIC,
         "analyzer": SAFETY_GUARDRAILS,
-        "synthesizer": SKILL_MD_CONTENT,
+        "synthesizer": SYNTHESIZER_SKILL,
     }
-    return mapping.get(node_name, SKILL_MD_CONTENT)
+    return mapping.get(node_name, SYNTHESIZER_SKILL)
