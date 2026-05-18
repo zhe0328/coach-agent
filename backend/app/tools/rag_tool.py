@@ -1,8 +1,9 @@
 import re
 from app.config import settings
 from app.database.chroma_db import ChromaManager
-from app.models.schema import RAGSearchSchema, ExerciseDetail
+from app.models.schema import RAGSearchSchema, ExerciseDetail, KnowledgeChunk
 from app.agent.utils.logger import logger, LogColor
+from typing import Union, List
 import asyncio
 
 
@@ -31,9 +32,9 @@ class RAGTool:
             raise ValueError("[RAGTool] 实时向量化文本为空，无法换算特征向量。")
 
         try:
-            # 严格对齐：使用与灌库（chroma_sync）一模一样的 text_embedding_v3 模型
+            # 严格对齐：使用与灌库（chroma_sync）一模一样的 text_embedding_v4 模型
             response = TextEmbedding.call(
-                model=TextEmbedding.Models.text_embedding_v3, input=[cleaned_text]
+                model=TextEmbedding.Models.text_embedding_v4, input=[cleaned_text]
             )
 
             if response.status_code == 200:
@@ -66,75 +67,111 @@ class RAGTool:
 
         return description, instructions
 
-    async def search_knowledge(self, params: RAGSearchSchema):
+    async def search_knowledge(self, params: RAGSearchSchema) -> List[Union[ExerciseDetail, KnowledgeChunk]]:
         """
-        场景 B: 宽泛知识与发力感语义检索 —— 1ms 本地进程内极速响应
+        场景 B: 宽泛知识与发力感语义检索 —— 【方案2】基于大模型智能意图路由的双库解耦解构管线
         """
         logger.info(
-            f"{LogColor.TOOL}[RAGTool] 🔍 正在执行本地 ChromaDB 向量语义匹配，Query: '{params.query_text}'{LogColor.RESET}"
+            f"{LogColor.TOOL}[RAGTool] 🔍 启动智能路由多库检索，Query: '{params.query_text}', Intent: '{params.intent}' {LogColor.RESET}"
         )
 
         try:
             limit = params.top_k
-            # 2. 实时换算千问 v3 高维语义特征向量
-            query_embedding = self._get_embedding(params.query_text)
+            
+            # 2. 第二步：根据意图，动态分配各个 Collection 的检索配额 (Top-K)
+            if params.intent == "exercise":
+                exe_limit = limit
+                book_limit = 0  # 纯动作查询，不浪费算力查书库
+            elif params.intent == "knowledge":
+                book_limit = limit
+                exe_limit = 0   # 纯理论机制查询，不查动作百科
+            else:  # mixed 混合意图
+                book_limit = max(2, limit - 1)  # 均衡分配
+                exe_limit = max(1, limit - book_limit)
 
-            # 3. 直驱本地持久化 ChromaDB 进行闪电级最近邻检索
-            results = self.exercise_collection.query(
-                query_embeddings=[query_embedding],
-                n_results=limit
-            )
+            # 3. 实时换算查询文本的千问 1024 维特征向量
+            query_embedding = self._get_embedding(params.query_text)
             
             final_results = []
-            
-            # 4. 解构 ChromaDB 返回的扁平数组结构
-            ids = results.get("ids", [[]])[0]
-            documents = results.get("documents", [[]])[0]
-            metadatas = results.get("metadatas", [[]])[0]
+            seen_contents = set()  # 去重锁
 
-            # 联动未来存书：如果动作百科集合彻底查空，可以降级去书籍集合捞数据
-            if not ids or len(ids) == 0:
-                logger.info(f"{LogColor.TOOL}[RAGTool] ⚠️ 动作库未命中，正在触发书籍知识库（fitness_books）二次泛化检索...{LogColor.RESET}")
-                book_results = self.book_collection.query(query_embeddings=[query_embedding], n_results=2)
-                ids = book_results.get("ids", [[]])[0]
-                documents = book_results.get("documents", [[]])[0]
-                metadatas = book_results.get("metadatas", [[]])[0]
-
-            # 5. 遍历检索结果，通过 Pydantic 强类型契约模型进行原子化装配
-            for i in range(len(ids)):
-                doc_text = documents[i]
-                meta_dict = metadatas[i] if (metadatas and i < len(metadatas)) else {}
-                
-                # 复用你原有的长文本解析规则（从全量 documents 中榨取出简介与具体步骤）
-                description, instructions = self._parse_content(doc_text)
-
-                # 完美还原并封装为你原生的标准 ExerciseDetail 模型
-                exercise_obj = ExerciseDetail(
-                    id=str(ids[i]),
-                    # 优先从我们在灌库时存入的 metadata 中提取结构化标签
-                    name_zh=meta_dict.get("name", "未命名动作"),
-                    target_zh=meta_dict.get("target_muscle", "未知肌群"),
-                    equipment_zh=meta_dict.get("equipment", "自重"),
-                    difficulty=meta_dict.get("difficulty", "beginner"),
-                    description_zh=description,
-                    instructions_zh=instructions,
-                    rag_content=doc_text  # 全文留档，供最终 Synthesizer 进行发力感细读
+            # === 轨迹 A: 动作库精准装配 ===
+            if exe_limit > 0:
+                exe_results = self.exercise_collection.query(
+                    query_embeddings=[query_embedding], n_results=exe_limit
                 )
-                final_results.append(exercise_obj)
-                
-            logger.info(f"{LogColor.TOOL}[RAGTool] ✅ 向量召回成功。成功向 Orchestrator 透传 {len(final_results)} 个标准 ExerciseDetail 知识实体。{LogColor.RESET}")
-            print("[RAG Result sample]: ", final_results[0])
+                exe_ids = exe_results.get("ids", [[]])[0]
+                exe_docs = exe_results.get("documents", [[]])[0]
+                exe_metas = exe_results.get("metadatas", [[]])[0]
+
+                for i in range(len(exe_ids)):
+                    doc_text = exe_docs[i]
+                    if doc_text in seen_contents: continue
+                    seen_contents.add(doc_text)
+                    
+                    meta_dict = exe_metas[i] if (exe_metas and i < len(exe_metas)) else {}
+                    description, instructions = self._parse_content(doc_text)
+
+                    final_results.append(ExerciseDetail(
+                        id=str(exe_ids[i]),
+                        name_zh=meta_dict.get("name", "未命名动作"),
+                        target_zh=meta_dict.get("target_muscle", "未知肌群"),
+                        equipment_zh=meta_dict.get("equipment", "自重"),
+                        difficulty=meta_dict.get("difficulty", "beginner"),
+                        description_zh=description,
+                        instructions_zh=instructions,
+                        rag_content=doc_text
+                    ))
+
+            # === 轨迹 B: 书籍理论库装配 ===
+            if book_limit > 0:
+                book_results = self.book_collection.query(
+                    query_embeddings=[query_embedding], n_results=book_limit
+                )
+                book_ids = book_results.get("ids", [[]])[0]
+                book_docs = book_results.get("documents", [[]])[0]
+                book_metas = book_results.get("metadatas", [[]])[0]
+                book_distances = book_results.get("distances", [[]])[0]
+
+                for i in range(len(book_ids)):
+                    doc_text = book_docs[i]
+                    if doc_text in seen_contents: continue
+                    seen_contents.add(doc_text)
+                    
+                    meta_dict = book_metas[i] if (book_metas and i < len(book_metas)) else {}
+                    dist = book_distances[i] if (book_distances and i < len(book_distances)) else 0.5
+                    
+                    raw_mechanisms = meta_dict.get("mechanisms", "none")
+                    principles = [p for p in raw_mechanisms.split(",") if p != "none"]
+
+                    knowledge_obj = KnowledgeChunk(
+                        id=str(book_ids[i]),
+                        source_book=meta_dict.get("source_book", "未知体能教材.md"),
+                        chapter_title=meta_dict.get("chapter_title", "核心理论"),
+                        category=meta_dict.get("category", "physiology_and_logic"),
+                        core_principles=principles,
+                        content=doc_text,
+                        cosine_similarity=round(1.0 - dist, 4)
+                    )
+                    
+                    # 混合模式下，理论知识往往是限制性条件，优先置顶
+                    if params.intent == "mixed":
+                        final_results.insert(0, knowledge_obj)
+                    else:
+                        final_results.append(knowledge_obj)
+
+            # 4. 安全拦截与最终截断
+            final_results = final_results[:limit]
+            logger.info(f"{LogColor.TOOL}[RAGTool] ✅ 大模型路由双库融合装配通车。输出实体数: {len(final_results)}{LogColor.RESET}")
             return final_results
 
         except Exception as e:
-            logger.error(f"[RAGTool] 强类型语义检索管线崩溃: {e}")
-            # 工业级容灾防御：报错时不抛异常阻断，而是返回空列表，让系统降级运行
+            logger.error(f"[RAGTool] 大模型智能路由检索管线发生崩溃: {e}")
             raise e
-
 
 async def test():
     rag_tool = RAGTool()
-    params = RAGSearchSchema(query_text="波比跳", top_k=3)
+    params = RAGSearchSchema(query_text="退阶动作的动作原理 髋关节保护", top_k=3, intent="knowledge")
     result = await rag_tool.search_knowledge(params)
     print(result)
 

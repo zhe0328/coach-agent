@@ -2,6 +2,7 @@ import json
 import asyncio
 from app.database.mysql_db import MySQLManager
 from app.models.schema import ExerciseBase, ExerciseDetail, SQLSearchSchema
+from app.agent.utils.logger import logger, LogColor
 from typing import Optional
 
 
@@ -58,7 +59,6 @@ class SQLTool:
                     cursor.execute(final_sql, tuple(query_params))
                     rows = cursor.fetchall()
         except mysql.connector.Error as err:
-            print(f"Database Error: {err}")
             raise err
         results = []
         for row in rows:
@@ -73,7 +73,9 @@ class SQLTool:
                     category_zh=row["category_zh"],
                 )
             )
-        print("[SQL Result Length]: ", len(results))
+        logger.info(
+            f"{LogColor.TOOL}[SQLTool] 🔍 正在输出SQL调用结果，Result: '{results}'{LogColor.RESET}"
+        )
         return results
 
     async def search_exercise_detail(

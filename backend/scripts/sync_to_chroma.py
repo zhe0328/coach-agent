@@ -51,6 +51,7 @@ class ChromaSync:
                 self.collection.delete(ids=existing_ids)
         except Exception as e:
             logger.warning(f"[ChromaSync] 清空旧库捕获异常: {e}")
+            raise e
 
         cursor = self.mysql_conn.cursor(dictionary=True)
         query = """
