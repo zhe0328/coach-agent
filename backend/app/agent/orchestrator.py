@@ -4,12 +4,14 @@ from .roles.smallPlanner import SmallPlannerAgent
 from .roles.synthesizer import CoachSynthesizer
 from .analyzer import PlanAnalyzer
 from .router import WorkflowRouter
+from .memory.memory_manager import WorkingMemoryManager
 from .prompts.skill_guide import get_skill_by_node
 from .utils.logger import logger, LogColor
 from ..tools.sql_tool import SQLTool
 from ..tools.rag_tool import RAGTool
 from ..tools.graph_tool import GraphTool
 from ..models.schema import ToolTask, FullPlan, SQLSearchSchema, RAGSearchSchema
+from ..models.fitness import ChatRecord, TrainingLog
 import mysql.connector
 import httpx
 from neo4j.exceptions import DriverError, Neo4jError, ServiceUnavailable
@@ -34,6 +36,7 @@ class CoachOrchestrator:
         self.rag_tool = RAGTool()
         self.graph_tool = GraphTool()
         self.client = client
+        self.memory_manager = WorkingMemoryManager(max_history_turns=4)
 
     @retry(
         stop=stop_after_attempt(3),
@@ -197,7 +200,7 @@ class CoachOrchestrator:
         )
         return final_results
 
-    async def execute(self, user_input: str):
+    async def execute(self, session_id: str, user_input: str):
         """
         全栈完全体：具备大脑级网络熔断自愈能力（Planner Fail-Safe）的终极编排引擎
         """
@@ -208,21 +211,54 @@ class CoachOrchestrator:
 
         current_step = 0
         max_loops = 3
-        feedback = ""
         last_logic_chain = ""
         tool_results = []
+        user_id = "123"
+        memory = await self.memory_manager.get_session_memory(session_id)
+        print("current memory: ", memory)
 
-        while current_step < max_loops:
+        # Step 2: 将历史对话转化为标准的消息流背景，供后续大 Planner 理解上下文（比如理解“换一个”代词）
+        history_messages = self.memory_manager.compile_to_llm_messages(memory)
+
+        # 确保每一轮外网发问进入时，状态机计数清零
+        memory.reset_loop_state()
+
+        macro_plan = await self.macroPlanner.plan(user_input, history_messages)
+
+        if macro_plan.routing_mode == "chat_only" or not macro_plan.selected_tools:
+            logger.info(
+                f"{LogColor.TOOL}[Orchestrator] 🍃 智能路由命中：【纯闲聊/社交寒暄】。开启零工具直驱通道...{LogColor.RESET}"
+            )
+
+            # 零数据直接送入 Synthesizer，并透传用户的原始提问
+            coach_response = await self.synthesizer.generate_response(
+                macro_plan=macro_plan,
+                executed_tasks=[],  # 👈 空资产无伤透传
+                user_input=user_input,
+            )
+
+            # 同样将这轮温馨的寒暄对话沉淀落盘进 Redis，维持多轮聊天连续性
+            full_reply_text = "".join(coach_response)
+            memory.add_message(role="user", content=user_input)
+            memory.add_message(role="assistant", content=full_reply_text)
+            memory.reset_loop_state()
+            await self.memory_manager.save_session_memory(session_id, memory)
+
+            logger.info(f"[Orchestrator] ✅ 纯闲聊直驱交互圆满闭环，工作记忆已持久化。")
+            return coach_response
+
+        while memory.current_loop_retry_count < max_loops:
             logger.info(f"\n--- 🔄 [ReAct 迭代第 {current_step + 1} 轮开始] ---")
 
             try:
-                # 1. 正常路径：尝试连接远端 OpenAI 进行精细化意图规划
+                # 正常路径：尝试连接远端 OpenAI 进行精细化意图规划
                 logger.info(
-                    f"{LogColor.PLAN}[Planner] 🧠 正在构建任务蓝图... (是否有反思反馈: {bool(feedback)}){LogColor.RESET}"
+                    f"{LogColor.PLAN}[Planner] 🧠 正在构建任务蓝图...){LogColor.RESET}"
                 )
-                macro_plan = await self.macroPlanner.plan(user_input, feedback)
 
-                full_plan = await self.smallPlanner.assemble_full_plan(user_input, macro_plan)
+                full_plan = await self.smallPlanner.assemble_full_plan(
+                    user_input, macro_plan
+                )
 
                 last_logic_chain = full_plan.logic_chain
                 logger.info(
@@ -280,6 +316,14 @@ class CoachOrchestrator:
                 is_complete, feedback = await self.analyzer.evaluate(
                     user_input, tool_results
                 )
+                if not is_complete:
+                    memory.latest_analyzer_feedback = feedback
+                    memory.current_loop_retry_count += 1
+                    await self.memory_manager.save_session_memory(session_id, memory)
+                    logger.warning(
+                        f"[Orchestrator] 🚨 质检被打回！反思已写回 Redis，正在触发自愈重规划..."
+                    )
+
                 route_decision = self.router.should_stop(
                     is_complete, current_step, max_loops
                 )
@@ -292,9 +336,6 @@ class CoachOrchestrator:
             current_step += 1
 
         # 5. 最终合成 (Synthesis)
-        # 💡【未来演进提示】：如果连 Synthesizer 在合成响应时也断网报错了，
-        # 同理可以在这里再套一个 except，直接用本地 Python 字符串模板返回：
-        # "【教练小提示】：当前网络通信较弱，为您本地离线检索出如下动作，请参考：..."
         logger.info(
             f"\n{LogColor.SYNTH}[Synthesizer] ✍️ 凝聚资产，正在生成最终的教练响应...{LogColor.RESET}"
         )
@@ -304,26 +345,51 @@ class CoachOrchestrator:
 
             for intent in macro_plan.selected_tools:
                 t_id = intent.task_id
-                
+
                 # 从执行器的账单里，定点捞出这个任务跑出来的核心资产（data）和生参数（params）
                 matched_raw_result = raw_data_map.get(t_id, {})
                 live_data = matched_raw_result.get("data", [])
-                
+
                 # 完美的“两界焊合”：
                 # 既拿到了大指挥官高瞻远瞩布下的宏观语境，又拿到了底层物理查库捞回的真实战果！
                 snapshot_node = {
                     "task_id": t_id,
-                    "tool_name": intent.tool_name,          # 来自大蓝图
-                    "reason": intent.reason,                # 来自大蓝图
+                    "tool_name": intent.tool_name,  # 来自大蓝图
+                    "reason": intent.reason,  # 来自大蓝图
                     "focused_query": intent.focused_query,  # 来自大蓝图
-                    "data": live_data                     # 来自底层执行结算
+                    "data": live_data,  # 来自底层执行结算
                 }
                 executed_tasks_snapshot.append(snapshot_node)
 
             final_answer = await self.synthesizer.generate_response(
-                macro_plan,
-                executed_tasks_snapshot
+                user_input, macro_plan, executed_tasks_snapshot
             )
+            full_reply_text = "".join(final_answer)
+            memory.add_message(role="user", content=user_input)
+            memory.add_message(role="assistant", content=full_reply_text)
+
+            memory.reset_loop_state()
+            await self.memory_manager.save_session_memory(session_id, memory)
+
+            userRecord = ChatRecord(
+                session_id=session_id,
+                role="user",
+                content=user_input,
+            )
+            coachRecord = ChatRecord(
+                session_id=session_id,
+                role="assistant",
+                content=final_answer.detailed_guidance,
+            )
+            trainingLog = TrainingLog(
+                user_id=user_id,
+                session_id=session_id,
+                coach_reply_summary=final_answer.greeting[:50],
+                generated_plan_json=final_answer.exercises
+            )
+            await self.sql_tool.log_chat_transaction(userRecord, coachRecord)
+
+            await self.sql_tool.save_training_log(trainingLog)
         except Exception as e:
             logger.error("[Synthesizer] 合成大模型断线，触发最终话术软着陆:", e)
             # 终极无网肉眼降级话术

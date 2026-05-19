@@ -159,11 +159,14 @@ class SmallPlannerAgent:
         )
 
         # 【高级并发池】：专项专办，有针对性地开启异步小 Planner 提取任务
+        all_activated_task_ids = {intent.task_id for intent in macro_plan.selected_tools}
+        
         extract_tasks = {}
         for intent in macro_plan.selected_tools:
             t_id = intent.task_id
             t_reason = intent.reason
             t_focused_query = intent.focused_query
+            
             if intent.tool_name == "sql_tool":
                 extract_tasks[t_id] = self._extract_sql_params(
                     t_focused_query, t_reason
@@ -194,12 +197,26 @@ class SmallPlannerAgent:
         # 4. 遍历宏观蓝图，将选装工具完美拼装为原生的标准 ToolTask 列表
         for intent in macro_plan.selected_tools:
             t_id = intent.task_id
+
+            valid_dependencies = []
+            if intent.depends_on:
+                for dep_id in intent.depends_on:
+                    # 检查大指挥官声明的依赖任务，在本轮是否【真的存在】于执行队列里
+                    if dep_id in all_activated_task_ids:
+                        valid_dependencies.append(dep_id)
+                    else:
+                        # 🛡️ 发现悬空孤儿依赖！果断在进程内将其物理抹除，将其降级、解锁为【独立并行/单发任务】！
+                        logger.warning(
+                            f"{LogColor.TOOL}[SmallPlanner] ⚠️ 发现拓扑悬空死锁！任务 [{t_id}] 声明依赖了 [{dep_id}]，"
+                            f"但该前置任务在本轮未被启动。系统已自动执行【拓扑剪枝】，强行恢复该任务独立运行！{LogColor.RESET}"
+                        )
+
             # 初始化一个干净的标准 ToolTask
             task_node = ToolTask(
                 task_id=intent.task_id,
                 tool=intent.tool_name,
                 reason=intent.reason,
-                depends_on=intent.depends_on if intent.depends_on else [],
+                depends_on=valid_dependencies
             )
 
             # 根据工具类型，将小 Planner 刚刚并发榨取出来的干净参数，定点“焊入”对应字段

@@ -4,17 +4,8 @@ class MacroPlannerAgent:
     def __init__(self, client):
         self.client = client
 
-    async def plan(self, user_input: str, feedback: str = "") -> MacroPlanSchema:
-        feedback_section = ""
-        if feedback:
-            feedback_section = f"""
-            ⚠️【来自上一轮执行的反思纠错指令 - 请最高优先级遵守】：
-            {feedback}
-            根据上述反馈，请立刻调整你的决策逻辑，修正工具参数或补充缺失的工具调用！
-            """
+    async def plan(self, user_input: str, history_context: list) -> MacroPlanSchema:
         system_prompt = f"""你是一个专业的健身训练调度员（Macro Planner）。你的唯一任务是审视用户的需求，从三个专业工具中选择最合适的组合，并定义它们的依赖拓扑关系。
-
-            {feedback_section}
 
             【复合多任务实例拆分铁律】：
             如果用户的输入包含多个不同的动作需求、多处伤病或多重理论疑问，你必须将它们拆解为【多个独立的工具实例】，每个实例赋予唯一的 `task_id`。
@@ -49,15 +40,21 @@ class MacroPlannerAgent:
 
             【严格约束】
             - 此时你只需决定触发哪个工具，不需要提取具体的动作细节参数。
+            - 如果你分析出用户的提问没有提到任何与运动有关的信息，比如动作名、肌肉群、器械、伤病或任何运动学百科全书查询，请绝对不要选装任何工具。将 routing_mode 锁死为 'chat_only'，并保持 selected_tools 为空数组 []。
             """
 
+        messages = [{"role": "system", "content": system_prompt}]
+
+        if history_context:
+            messages.extend(history_context)
+
+        user_content = f"【当前用户的最新发问】：\n\"{user_input}\"\n"
+
+        messages.append({"role": "user", "content": user_content})
         
         response = self.client.beta.chat.completions.parse(
             model="gpt-4o", # 涉及复杂规划，建议用强模型
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_input}
-            ],
+            messages=messages,
             response_format=MacroPlanSchema
         )
         return response.choices[0].message.parsed

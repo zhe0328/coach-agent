@@ -2,6 +2,7 @@ from pydantic import BaseModel, Field
 from typing import List, Optional, Literal
 
 class ChatRequest(BaseModel):
+    session_id: str = Field(..., description="前端生成的唯一会话UUID，用于锁定工作记忆空间")
     user_id: int
     message: str
 
@@ -70,6 +71,10 @@ class ToolCallIntent(BaseModel):
     focused_query: str = Field(..., description="针对该工具剥离噪音后的定向用户提问切片（如：'用哑铃练胸'）")
 
 class MacroPlanSchema(BaseModel):
+    routing_mode: Literal["standard", "chat_only"] = Field(
+        "standard", 
+        description="standard: 需要调用工具库; chat_only: 纯寒暄、日常问候或无法触发任何工具的闲聊"
+    )
     selected_tools: List[ToolCallIntent] = Field(..., description="选装的工具链拓扑图")
     routing_reason: str = Field(..., description="做出该工具组合选择的简短依据")
 
@@ -115,7 +120,7 @@ class CoachResponse(BaseModel):
     greeting: str = Field(..., description="开场白")
     
     # 场景 A：精准动作推荐 (SQL/GraphRAG 产出)
-    exercises: Optional[List[ExerciseDetail]] = Field(
+    exercises: Optional[List[ExerciseBase]] = Field(
         None, description="动作卡片列表，若是纯知识回答则为 None"
     )
     

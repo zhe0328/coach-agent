@@ -80,5 +80,5 @@ async def chat_endpoint(request: ChatRequest):
 # 传统的非流式接口 (用于简单测试或低频场景)
 @app.post("/v1/chat/static")
 async def chat_static(request: ChatRequest):
-    response = await orchestrator.execute(request.message)
+    response = await orchestrator.execute(request.session_id, request.message)
     return {"data": response}

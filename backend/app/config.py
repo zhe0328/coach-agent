@@ -26,6 +26,8 @@ class Settings(BaseSettings):
     LLM_MODEL_NAME: str
 
     DASHSCOPE_API_KEY: str
+
+    REDIS_URL: str
     
     # 系统配置
     DEBUG: bool = False
