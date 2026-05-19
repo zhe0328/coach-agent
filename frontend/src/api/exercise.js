@@ -2,9 +2,10 @@ import client from "./client";
 
 export const exerciseApi = {
     // FastAPI parses simple str params from query string on POST
-    getAiRecommendation: async (userId, message) => {
+    getAiRecommendation: async (sessionId, userId, message) => {
         try {
             const response = await client.post("/v1/chat/static", {
+                session_id: sessionId,
                 user_id: userId,
                 message: message
             });
