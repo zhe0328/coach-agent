@@ -1,5 +1,30 @@
+from decimal import Decimal
 from pydantic import BaseModel, Field
 from typing import List, Optional, Literal
+
+class UserProfileRequest(BaseModel): 
+    user_id: Optional[int] = Field(None, description="user id")
+    username: str
+    gender: Literal["male", "female", "other"]
+    weight_kg: float
+    height_cm: float
+    fitness_level: Literal["beginner", "intermediate", "advanced"]
+    fitness_goal: str
+    equipments: str
+    injuries: str
+
+
+class UserSignupRequest(UserProfileRequest):
+    password: str
+
+class UserLoginRequest(BaseModel):
+    username: str
+    password: str
+
+class AuthResponse(BaseModel):
+    user_id: int
+    username: str
+    status: str = Field("success", description="鉴权状态标记")
 
 class ChatRequest(BaseModel):
     session_id: str = Field(..., description="前端生成的唯一会话UUID，用于锁定工作记忆空间")
@@ -20,7 +45,7 @@ class RAGSearchSchema(BaseModel):
 class GraphReasoningSchema(BaseModel):
     exercise_name: Optional[str] = Field(None, description="动作名称")
     muscle_name: Optional[str] = Field(None, description="肌肉名称，如'胸肌'")
-    joint_name: Optional[str] = Field(None, description="受损关节名称，如'膝关节'")
+    joint_name: Optional[Literal["脊柱", "肩关节", "膝关节", "踝关节", "腕关节", "肘关节", "髋关节"]] = Field(None, description="受损关节名称，如'膝关节'")
     scenario: Literal[
         "injury_avoidance", "progression", "regression", "synergy", "strengthen_joint"
     ]

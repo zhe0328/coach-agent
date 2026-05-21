@@ -149,7 +149,7 @@ class SmallPlannerAgent:
             raise e
 
     async def assemble_full_plan(
-        self, user_input: str, macro_plan: MacroPlanSchema
+        self, macro_plan: MacroPlanSchema
     ) -> FullPlan:
         """
         核心装配大脑：将宏观意图与微观参数完美焊接，还原并吐出原生的 FullPlan 强类型契约
@@ -160,7 +160,7 @@ class SmallPlannerAgent:
 
         # 【高级并发池】：专项专办，有针对性地开启异步小 Planner 提取任务
         all_activated_task_ids = {intent.task_id for intent in macro_plan.selected_tools}
-        
+
         extract_tasks = {}
         for intent in macro_plan.selected_tools:
             t_id = intent.task_id

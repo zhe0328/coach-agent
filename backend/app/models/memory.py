@@ -35,7 +35,7 @@ class InjurySnifferSchema(BaseModel):
         description="用户在此轮对话中是否明确、主观表达了身体某处关节疼痛、酸痛、受伤、弹响、卡顿或活动受限。若只是普通的训练交流则为 false。"
     )
     
-    joint: Optional[JOINT_LITERAL] = Field(
+    joint: Optional[List[JOINT_LITERAL]] = Field(
         None, 
         description="受损或不适的身体关节名称。必须严格从允许的解剖学关节列表中选择。若 has_new_injury 为 false，则此处必须保持 null (None)。"
     )
@@ -49,3 +49,7 @@ class InjurySnifferSchema(BaseModel):
         ..., 
         description="简短摘录或分析用户对话中透露出伤病的客观依据（如：用户主诉深蹲时膝盖有弹响）。"
     )
+
+    has_new_equipment: bool = Field(..., description="用户是否提到了自己【新买了解锁、或者可以用】的新器材。")
+    equipment_name: Optional[List[str]] = Field(None, )
+    

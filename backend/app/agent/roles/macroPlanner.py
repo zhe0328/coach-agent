@@ -1,11 +1,26 @@
+from app.models.memory import WorkingMemory
 from ...models.schema import MacroPlanSchema
 
 class MacroPlannerAgent:
     def __init__(self, client):
         self.client = client
 
-    async def plan(self, user_input: str, history_context: list) -> MacroPlanSchema:
+    async def plan(self, user_input: str, history_context: list, semantic_profile: list[dict[str, any]], memory: WorkingMemory) -> MacroPlanSchema:
+        semantic_constraints = (
+            f"【来自图数据库（Neo4j）的当前用户长效硬性指标与物理红线】:\n"
+            f"- 用户当前体能级别硬钢印: {semantic_profile[0].get('level', 'beginner')}\n"
+            f"- 用户当前【主诉受损/严禁过度负载】的身体关节: {', '.join(semantic_profile[0].get('injuries', [])) if semantic_profile[0].get('injuries') else '全身健康无受损'}\n"
+            f"- 用户家里目前【仅拥有且仅能调遣】的常备训练器械库: {', '.join(semantic_profile[0].get('equipment_list', [])) if semantic_profile[0].get('equipment_list') else '自重'}\n\n"
+            f"【最高硬核调度约束】：\n"
+            f"1. 安全红线：如果受损关节包含'脊柱'（如腰椎突出），本轮如果涉及到下肢或背部训练，你【必须且强制】选装图任务实例（task_graph_injury）去从医学图谱层面严格拉黑并剔除高风险重载动作（如硬拉、杠铃深蹲）！\n"
+            f"2. 器械边界：在为工具拆分多任务实例（selected_tools）时，你配置的专属 `focused_query` 和 `reason` 中【必须严格限定器械范围】！如果可用器械库只有'哑铃,弹力带'，你的 `focused_query` 绝对禁止提及'杠铃、单杠'等无中生有的违规设备，防止微观参数提取器发生符号漂移脑补！"
+            f"你【必须且强制】将当前用户的体能级别字面量「{semantic_profile[0].get('level', 'beginner')}」作为核心约束词，直接写入 `focused_query` 文本中！\n"
+        )
+
         system_prompt = f"""你是一个专业的健身训练调度员（Macro Planner）。你的唯一任务是审视用户的需求，从三个专业工具中选择最合适的组合，并定义它们的依赖拓扑关系。
+
+            【微观单槽（Single Slot）多实例拆分铁律 —— 违反则下游全盘崩溃】：
+            你的下游微观工具（SQL_tool、graph_tool）在参数设计上是【单内聚的】，它们每次【只支持且只允许】接收单个器械或单个关节名称！
 
             【复合多任务实例拆分铁律】：
             如果用户的输入包含多个不同的动作需求、多处伤病或多重理论疑问，你必须将它们拆解为【多个独立的工具实例】，每个实例赋予唯一的 `task_id`。
@@ -21,7 +36,7 @@ class MacroPlannerAgent:
             2. graph_tool (生理逻辑推理)：涉及动作切换(太难/太易)、伤病规避(痛/受伤/关节不适/关节强化)、或寻找协同动作时触发。
             3. rag_tool (双库检索)：
             - 用户问具体动作“怎么做”、精细发力感 -> 设置 intent="exercise"
-            - 用户问动作先后顺序、组合、行不行、生理机制、疲劳原因 -> 设置 intent="knowledge"
+            - 用户问动作先后顺序、组合、行不行、生理机制、疲劳原因、训练计划、饮食/营养方案、运动生理学 -> 设置 intent="knowledge"
             - 用户描述模糊、需要综合理论与实操背景 -> 设置 intent="mixed"
 
             【任务依赖生成指南 (Topological Dependency Rules)】
@@ -48,7 +63,13 @@ class MacroPlannerAgent:
         if history_context:
             messages.extend(history_context)
 
-        user_content = f"【当前用户的最新发问】：\n\"{user_input}\"\n"
+        user_content = f"{semantic_constraints}【当前用户的最新发问】：\n\"{user_input}\"\n"
+
+        if memory.latest_analyzer_feedback:
+            user_content += (
+                f"【自愈复盘报告 —— 你在上一轮由于调度不当被质检官打回了！】\n"
+                f"- 质检官的反思修正指令: \"{memory.latest_analyzer_feedback}\"\n"
+            )
 
         messages.append({"role": "user", "content": user_content})
         
