@@ -83,7 +83,13 @@ class CoachSynthesizer:
                 f"\" {user_input} \"\n\n" 
                 f"【宏观决策链逻辑总纲】:\n\"{macro_plan.routing_reason}\"\n\n"
                 f"请严格基于上述被 XML 隔离的多任务高密度资产包，践行你的教练人格，"
-                f"为用户产出一份因果逻辑严密、执教口令清晰、且绝对规避伤病风险的流式金牌训练指导："
+                f"为用户产出一份因果逻辑严密、执教口令清晰、且绝对规避伤病风险的流式金牌训练指导!\n\n"
+                f"【Deepeval账硬核死命令1】：\n"
+                f"你最终输出的 JSON 对象中有一个 `references` 数组。请你睁大眼睛，"
+                f"把你上面看到的、本次用来推演计划所【真正参考过的 XML 标签里的生文本或动作步骤】的原文字符串，"
+                f"一字不差、完完整整地提取并添加进 `references` 数组列表中！这是系统用来执行 Ragas 科学测谎和反幻觉对账的唯一红线！"
+                f"【Deepeval账硬核死命令2】\n"
+                f"你最终输出的 JSON 对象中有一个 `selected_tools` 数组。请你睁大眼睛，把{macro_plan.selected_tools}注入selected_tools!"
             )
 
         return final_system_prompt, final_user_prompt

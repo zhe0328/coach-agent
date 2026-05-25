@@ -1,5 +1,5 @@
 from app.database.neo4j_db import Neo4jManager
-from app.models.schema import GraphReasoningSchema, UserProfileRequest
+from app.models.schema import GraphReasoningSchema
 from app.agent.utils.logger import logger, LogColor
 from typing import List, Dict, Any
 import asyncio
@@ -355,6 +355,31 @@ class GraphTool:
             logger.error(f"[GraphTool] 后台并发追加器材连线遭遇异常: {e}")
             return False
 
+    async def get_all_injury_edges(self):
+        cypher_query = """
+                MATCH (ex:Exercise)-[l:LOADS]->(j:Joint)
+                WHERE j.name IN ["髋关节", "膝关节", "踝关节"]
+                RETURN ex.name AS exercise_name, j.name AS joint_name
+            """
+        with self.db.get_session() as session:
+            result = session.run(cypher_query)
+            return [record.data() for record in result]
+
+    async def get_all_progression_regressions(self):
+        cypher_query = """
+            MATCH (base:Exercise)-[:PROGRESSION_OF]->(advanced:Exercise),
+            (base)-[:TARGETS]->(m:Muscle)
+            WHERE m.name IN ["股四头肌", "臀大肌", "腘绳肌", "外展肌群", "小腿肌群", "内收肌群"]
+            RETURN base.name AS lower_action, 
+                   advanced.name AS higher_action, 
+                   base.difficulty AS low_level, 
+                   advanced.difficulty AS high_level,
+                   "PROGRESSION_OF" AS relation_type,
+                   m.name AS muscle_name
+            """
+        with self.db.get_session() as session:
+            result = session.run(cypher_query)
+            return [record.data() for record in result]
 
 async def test():
     graph_tool = GraphTool()

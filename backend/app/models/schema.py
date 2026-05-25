@@ -36,7 +36,7 @@ class RAGSearchSchema(BaseModel):
     query_text: str = Field(
         ..., description="用户的健身问题，例如'如何缓解久坐腰痛'、'波比跳怎么做'"
     )
-    top_k: int = Field(3, description="检索相关的知识条目数量")
+    top_k: int = Field(5, description="检索相关的知识条目数量")
     intent: Literal["exercise", "knowledge", "mixed"] = Field(
         ..., 
         description="exercise: 仅查询特定动作实操/发力感; knowledge: 查询动作组合逻辑/生理机制/课表编排/疲劳等理论; mixed: 两者皆有"
@@ -158,3 +158,8 @@ class CoachResponse(BaseModel):
     safety_alerts: List[str] = Field(default=[], description="安全警告")
     summary: str = Field(..., description="总结建议")
     medical_disclaimer: str = Field("以上建议仅供参考，如需获取医疗建议或诊断信息，请咨询专业人士。", description="免责声明")
+    references: List[str] = Field(
+        default_factory=list, 
+        description="本次执教方案所高保真引用的全部底层 MySQL/Chroma/Neo4j 原始文献与客观规律快照数组"
+    )
+    selected_tools: List[Literal["sql_tool", "graph_tool", "rag_tool"]]

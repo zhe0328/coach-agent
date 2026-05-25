@@ -395,6 +395,41 @@ class SQLTool:
     async def update_user_profile(self, userSignupRequest: UserSignupRequest):
         await asyncio.to_thread(self._update_user_profile, userSignupRequest)
 
+    async def get_all_exercises(self) -> list[ExerciseBase]:
+        sql_query = """
+            SELECT
+                e.id, e.name_zh, e.difficulty,
+                b.name_zh AS body_part_zh,
+                eq.name_zh AS equipment_zh,
+                t.name_zh AS target_zh,
+                c.name_zh AS category_zh
+            FROM exercises e
+            JOIN body_parts b ON e.body_part_id = b.id
+            JOIN equipments eq ON e.equipment_id = eq.id
+            JOIN targets t ON e.target_id = t.id
+            JOIN categories c ON e.category_id = c.id
+            """
+        try:
+            with self.db_manager.get_connection() as conn:
+                with conn.cursor(dictionary=True) as cursor:
+                    cursor.execute(sql_query)
+                    rows = cursor.fetchall()
+        except mysql.connector.Error as err:
+            raise err
+        results = []
+        for row in rows:
+            results.append(
+                ExerciseBase(
+                    id=row["id"],
+                    name_zh=row["name_zh"],
+                    body_part_zh=row["body_part_zh"],
+                    equipment_zh=row["equipment_zh"],
+                    target_zh=row["target_zh"],
+                    difficulty=row["difficulty"],
+                    category_zh=row["category_zh"],
+                )
+            )
+        return results
 
 async def test():
     sql_tool = SQLTool()

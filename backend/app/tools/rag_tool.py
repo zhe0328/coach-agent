@@ -115,6 +115,7 @@ class RAGTool:
                     final_results.append(ExerciseDetail(
                         id=str(exe_ids[i]),
                         name_zh=meta_dict.get("name", "未命名动作"),
+                        body_part_zh=meta_dict.get("body_part", "未知肌群"),
                         target_zh=meta_dict.get("target_muscle", "未知肌群"),
                         equipment_zh=meta_dict.get("equipment", "自重"),
                         difficulty=meta_dict.get("difficulty", "beginner"),
