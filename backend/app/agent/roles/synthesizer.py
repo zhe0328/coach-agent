@@ -1,7 +1,7 @@
 from openai import OpenAI
-from ..prompts.skill_guide import SYNTHESIZER_SKILL
+from ..prompts.skill_guide import SYNTHESIZER_SKILL, COACH_PERSONA
 from ...config import settings
-from ...models.schema import CoachResponse, MacroPlanSchema, ToolTask
+from ...models.schema import CoachResponse, ExerciseBase, MacroPlanSchema, ToolTask
 
 class CoachSynthesizer:
     def __init__(self, client, skill_guide):
@@ -9,7 +9,7 @@ class CoachSynthesizer:
         self.model = settings.LLM_MODEL_NAME
         self.skill_guide = skill_guide
 
-    def _generate_prompts(self, macro_plan: MacroPlanSchema, executed_tasks: list):
+    def _generate_prompts(self, user_input: str, macro_plan: MacroPlanSchema, executed_tasks: list):
         """
         流式话术合成官：【终极对齐版】
         通过完全结构化的任务切片与子原因，强行让大模型拥有 100% 绝对安全的场景辨识指纹！
@@ -28,15 +28,14 @@ class CoachSynthesizer:
             if t_name == "sql_tool":
                 exe_xml_blocks = []
                 for exe in raw_data:
-                    if isinstance(exe, dict): # 已经完成二级回填的满血字典
+                    print("sql exe: ", exe, type(exe))
+                    if isinstance(exe, ExerciseBase): # 已经完成二级回填的满血字典
                         exe_xml_blocks.append(
-                            f"  - 动作实体 [ID: {exe['id']}]\n"
-                            f"    名称: {exe['name_zh']}\n"
-                            f"    目标肌肉: {exe['target_zh']}\n"
-                            f"    所需器械: {exe['equipment_zh']}\n"
-                            f"    难度: {exe['difficulty']}\n"
-                            f"    发力简介: {exe['description_zh']}\n"
-                            f"    官方标准步骤: {' || '.join(exe['instructions_zh'])}\n"
+                            f"  - 动作实体 [ACTION_ID: {exe.id}]\n"
+                            f"    名称: {exe.name_zh}\n"
+                            f"    目标肌肉: {exe.target_zh}\n"
+                            f"    所需器械: {exe.equipment_zh}\n"
+                            f"    难度: {exe.difficulty}\n"
                         )
                 xml_context_parts.append(
                     f"<已核准安全动作资产 task_id='{t_id}'>\n"
@@ -80,20 +79,33 @@ class CoachSynthesizer:
             
             # 3. 构造极度纯净的 User Prompt，不再给大模型留任何脑补和分心的空间
             final_user_prompt = (
+                f"【核心约束：用户的最原始发问与主观要求（包含数量、强度、偏好等核心指标）】:\n"
+                f"\" {user_input} \"\n\n" 
                 f"【宏观决策链逻辑总纲】:\n\"{macro_plan.routing_reason}\"\n\n"
                 f"请严格基于上述被 XML 隔离的多任务高密度资产包，践行你的教练人格，"
-                f"为用户产出一份因果逻辑严密、执教口令清晰、且绝对规避伤病风险的流式金牌训练指导："
+                f"为用户产出一份因果逻辑严密、执教口令清晰、且绝对规避伤病风险的流式金牌训练指导!\n\n"
+                f"【Deepeval账硬核死命令1】：\n"
+                f"你最终输出的 JSON 对象中有一个 `references` 数组。请你睁大眼睛，"
+                f"把你上面看到的、本次用来推演计划所【真正参考过的 XML 标签里的生文本或动作步骤】的原文字符串，"
+                f"一字不差、完完整整地提取并添加进 `references` 数组列表中！这是系统用来执行 Ragas 科学测谎和反幻觉对账的唯一红线！"
+                f"【Deepeval账硬核死命令2】\n"
+                f"你最终输出的 JSON 对象中有一个 `selected_tools` 数组。请你睁大眼睛，把{macro_plan.selected_tools}注入selected_tools!"
             )
 
         return final_system_prompt, final_user_prompt
 
 
-    async def generate_response(self, macro_plan: MacroPlanSchema, executed_tasks: list):
+    async def generate_response(self, user_input: str, macro_plan: MacroPlanSchema, executed_tasks: list):
         """
         结合多路检索结果与 SKILL.md 生成专业回复
         """
 
-        final_system_prompt, final_user_prompt = self._generate_prompts(macro_plan, executed_tasks)
+        if executed_tasks and len(executed_tasks) > 0:
+            final_system_prompt, final_user_prompt = self._generate_prompts(user_input, macro_plan, executed_tasks)
+
+        else: 
+            final_system_prompt = COACH_PERSONA
+            final_user_prompt = user_input
 
         response = self.client.chat.completions.parse(
             model=self.model,
@@ -105,4 +117,6 @@ class CoachSynthesizer:
             response_format=CoachResponse
         )
         
-        return response.choices[0].message.content
+        parsed_object: CoachResponse = response.choices[0].message.parsed
+
+        return parsed_object

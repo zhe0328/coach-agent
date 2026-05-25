@@ -1,5 +1,6 @@
 from app.database.neo4j_db import Neo4jManager
 from app.models.schema import GraphReasoningSchema
+from app.agent.utils.logger import logger, LogColor
 from typing import List, Dict, Any
 import asyncio
 
@@ -222,18 +223,178 @@ class GraphTool:
             result = session.run(cypher, joint_name=joint_name)
             return [record.data() for record in result]
 
+    async def init_user_semantic_memory(self, user_id: int, name: str, level: str, injuries: list, equipments: list):
+        """
+        【完全体：高可用防死锁异步版】
+        通过将伤病、器械物理切分为两条独立的 Cypher 语句，彻底粉碎 UNWIND 空数组蒸发漏洞与死锁风险！
+        """
+        logger.info(f"{LogColor.TOOL}[GraphTool] ✒️ 正在执行防死锁用户语义记忆刻录, User: {name}{LogColor.RESET}")
+
+        # 🚀 核心优化 A：将 user_id 转换为字符串，对齐 Neo4j 拓扑索引
+        str_user_id = str(user_id)
+
+        # 🚀 核心优化 B：拆分为独立语句 1 ── 专攻基础画像与伤病红线
+        # 使用 DETACH DELETE 显式安全斩断
+        cypher_injuries = """
+            MERGE (u:User {user_id: $user_id})
+            SET u.name = $name, u.level = $level
+            
+            WITH u
+            OPTIONAL MATCH (u)-[r1:HAS_INJURY]->()
+            DELETE r1
+            
+            WITH u
+            // 🛡️ 终极护栏：只有当数组不为空时，才执行解包和建立红线，完美破解蒸发漏洞！
+            WHERE size($injuries) > 0
+            UNWIND $injuries AS injury_joint
+            MATCH (j:Joint {name: injury_joint})
+            MERGE (u)-[:HAS_INJURY {created_at: timestamp()}]->(j)
+        """
+
+        # 🚀 核心优化 C：拆分为独立语句 2 ── 专攻常用器械物理边界
+        cypher_equipments = """
+            MATCH (u:User {user_id: $user_id})
+            
+            WITH u
+            OPTIONAL MATCH (u)-[r2:HAS_EQUIPMENT]->()
+            DELETE r2
+            
+            WITH u
+            // 🛡️ 终极护栏：只有当器械不为空时，才执行绑定
+            WHERE size($equipments) > 0
+            UNWIND $equipments AS equip_name
+            MATCH (e:Equipment {name: equip_name})
+            MERGE (u)-[:HAS_EQUIPMENT]->(e)
+        """
+
+        try:
+            with self.db.get_session() as session:
+                session.run(
+                    cypher_injuries, 
+                    user_id=str_user_id, name=name, level=level, injuries=injuries
+                )
+                session.run(
+                    cypher_equipments, 
+                    user_id=str_user_id, equipments=equipments
+                )
+                
+            logger.info(f"✅ [Semantic Memory] 成功为用户 [{name}] 固化了【防蒸发、防死锁】的长效语义记忆。")
+            
+        except Exception as e:
+            logger.error(f"[GraphTool] 异步图数据库写库遭遇严重崩溃: {e}")
+            raise e
+        print(f"✅ [Semantic Memory] 成功为用户 [{name}] 固化了长效解剖学避灾与器械边界钢印。")
+
+    async def fetch_user_semantic_memory(self, user_id: int) -> List[Dict[str, Any]]:
+        """
+        从 Neo4j 瞬间捞取该用户的长效语义记忆画像（包含伤病限制与器械边界）
+        """
+        cypher = """
+            MATCH (u:User {user_id: $user_id})
+            OPTIONAL MATCH (u)-[r1:HAS_INJURY]->(j:Joint)
+            OPTIONAL MATCH (u)-[r2:HAS_EQUIPMENT]->(e:Equipment)
+            RETURN u.level as level, 
+                collect(distinct j.name) as injuries, 
+                collect(distinct e.name) as equipment_list
+            """
+            
+        with self.db.get_session() as session:
+            result = session.run(cypher, user_id=str(user_id))
+            return [record.data() for record in result]
+
+
+    async def append_injury_list_to_profile(self, user_id: int, injury_list: List[str]) -> bool:
+        """
+        [多维矩阵解包版]：在对话结束后，向用户的语义记忆动态追加【多个不适关节】红线
+        """
+        if not injury_list:
+            return True
+            
+        cypher_injury = """
+            MATCH (u:User {user_id: $user_id})
+            // 1. 利用 UNWIND 将传入的伤病列表（如 ['手腕', '膝关节']）剁碎炸裂成多行平行处理流
+            UNWIND $injury_list AS single_joint
+            // 2. 匹配官方解剖学节点
+            MATCH (j:Joint {name: single_joint})
+            // 3. 完美的幂等合并：若这条不适线没拉过，拉起它并标记临时痛感 temporary_pain
+            MERGE (u)-[r:HAS_INJURY]->(j)
+            ON CREATE SET r.severity = "temporary_pain", r.updated_at = timestamp()
+            ON MATCH SET r.updated_at = timestamp()
+        """
+        try:
+            with self.db.get_session() as session:
+                session.run(cypher_injury, user_id=str(user_id), injury_list=injury_list)
+            logger.info(f"{LogColor.TOOL}[GraphTool] 🛡️ 伤病防线拓扑扩展成功！已并发并入 {injury_list} 拦截线。{LogColor.RESET}")
+            return True
+        except Exception as e:
+            logger.error(f"[GraphTool] 后台并发追加伤病红线遭遇异常: {e}")
+            return False
+
+    async def append_equipment_list_to_profile(self, user_id: int, equip_list: List[str]) -> bool:
+        """
+        [多维矩阵解包版]：在对话结束后，向用户的语义记忆动态追加【多个新解锁器材】边界
+        """
+        if not equip_list:
+            return True
+            
+        cypher_equip = """
+            MATCH (u:User {user_id: $user_id})
+            // 1. 将新买的器材列表解包
+            UNWIND $equip_list AS single_equip
+            // 2. 跨异构数据库语义对齐：匹配官方器械节点（若大模型脑补了不存在的词，此处自动匹配失败，安全不报错）
+            MATCH (e:Equipment {name: single_equip})
+            // 3. 建立手牌连线
+            MERGE (u)-[:HAS_EQUIPMENT]->(e)
+        """
+        try:
+            with self.db.get_session() as session:
+                session.run(cypher_equip, user_id=str(user_id), equip_list=equip_list)
+            logger.info(f"{LogColor.TOOL}[GraphTool] 🛠️ 器械资产拓扑扩展成功！已并发解禁 {equip_list} 筛选池。{LogColor.RESET}")
+            return True
+        except Exception as e:
+            logger.error(f"[GraphTool] 后台并发追加器材连线遭遇异常: {e}")
+            return False
+
+    async def get_all_injury_edges(self):
+        cypher_query = """
+                MATCH (ex:Exercise)-[l:LOADS]->(j:Joint)
+                WHERE j.name IN ["髋关节", "膝关节", "踝关节"]
+                RETURN ex.name AS exercise_name, j.name AS joint_name
+            """
+        with self.db.get_session() as session:
+            result = session.run(cypher_query)
+            return [record.data() for record in result]
+
+    async def get_all_progression_regressions(self):
+        cypher_query = """
+            MATCH (base:Exercise)-[:PROGRESSION_OF]->(advanced:Exercise),
+            (base)-[:TARGETS]->(m:Muscle)
+            WHERE m.name IN ["股四头肌", "臀大肌", "腘绳肌", "外展肌群", "小腿肌群", "内收肌群"]
+            RETURN base.name AS lower_action, 
+                   advanced.name AS higher_action, 
+                   base.difficulty AS low_level, 
+                   advanced.difficulty AS high_level,
+                   "PROGRESSION_OF" AS relation_type,
+                   m.name AS muscle_name
+            """
+        with self.db.get_session() as session:
+            result = session.run(cypher_query)
+            return [record.data() for record in result]
 
 async def test():
     graph_tool = GraphTool()
-    params = GraphReasoningSchema(
-        exercise_name="上斜飞鸟",
-        muscle_name="下腹部",
-        joint_name="踝关节",
-        candidate_ids=["0030", "0032", "0042"],
-        scenario="strengthen_joint",
-    )
-    result = await graph_tool.reason(params)
-    print(result)
+    # params = GraphReasoningSchema(
+    #     exercise_name="上斜飞鸟",
+    #     muscle_name="下腹部",
+    #     joint_name="踝关节",
+    #     candidate_ids=["0030", "0032", "0042"],
+    #     scenario="strengthen_joint",
+    # )
+    # result = await graph_tool.reason(params)
+    # print(result)
+
+    await graph_tool.init_user_semantic_memory(
+        user_id=1, name="李小明", level="intermediate", injuries=["肩关节"], equipments=["哑铃", "弹力带", "泡沫轴", "自重"])
 
 
 if __name__ == "__main__":

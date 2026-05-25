@@ -85,7 +85,6 @@ class PlanAnalyzer:
             parts.append("- 【RAG 噪声豁免】：本轮未调用 RAG 工具，请【绝对禁止】对任何有关 RAG、知识错配、步骤缺失的问题进行审查或抛出反思。")
 
         if has_safety_concern:
-            # flags["graph"] is guaranteed True here — the False case is caught before reaching this method
             parts.append(
                 "- 【Graph 拓扑完备检查】：用户存在明显的伤病或动作切换诉求，且系统已触发 graph_tool。"
                 "请仔细审查 `graph_inference_data` 字段中是否成功返回了'不安全动作拦截'、'降阶动作'、'平替动作'或'协同肌肉'。"

@@ -1,0 +1,130 @@
+/* components/UserAuth.css */
+
+.auth-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 30px;
+    max-width: 650px;
+    margin: 40px auto;
+    box-shadow: var(--shadow-modal);
+    animation: fadeInAuth 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  
+  .auth-card.login-mini { max-width: 420px; }
+  .profile-popup { position: relative; max-width: 600px; margin: 10vh auto; }
+  
+  .auth-header h2 {
+    font-family: "Syne", sans-serif;
+    font-weight: 700;
+    color: var(--text-primary);
+    font-size: 22px;
+    margin-bottom: 6px;
+  }
+  
+  .auth-header p {
+    color: var(--text-secondary);
+    font-size: 13px;
+    margin-bottom: 24px;
+    line-height: 1.4;
+  }
+  
+  .auth-form { display: flex; flex-direction: column; gap: 18px; }
+  
+  .form-row-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+  .form-row-grid.tri-grid { grid-template-columns: 1fr 1fr 1fr; }
+  
+  .form-group { display: flex; flex-direction: column; gap: 6px; }
+  .form-group label {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-primary);
+  }
+  
+  .form-group input, .form-group select {
+    height: 40px;
+    padding: 0 12px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+    background: var(--bg-surface);
+    color: var(--text-primary);
+    font-family: inherit;
+    font-size: 14px;
+    transition: all 0.2s ease;
+  }
+  
+  .form-group input:focus, .form-group select:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-dim);
+    background: var(--bg-card);
+  }
+  
+  /* 标签式多选框设计（大厂高端药丸纽质感） */
+  .checkbox-section { margin-top: 6px; }
+  .checkbox-flex { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+  .checkbox-tag {
+    display: inline-flex;
+    align-items: center;
+    padding: 6px 14px;
+    background: var(--bg-surface);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-xl);
+    font-size: 13px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all 0.2s ease;
+  }
+  .checkbox-tag input { display: none; } /* 物理隐藏原生复选框 */
+  
+  .checkbox-tag:hover { background: var(--teal-light); border-color: var(--steel); }
+  .checkbox-tag.active {
+    background: var(--accent-light);
+    border-color: var(--accent);
+    color: var(--navy);
+    font-weight: 500;
+  }
+  
+  /* 伤病红线高亮警告色块 */
+  .checkbox-tag.injury-tag.active {
+    background: #fde8e8; /* 柔和的伤病警示淡红 */
+    border-color: #f8b4b4;
+    color: #9b1c1c;
+  }
+  
+  .auth-submit-btn {
+    height: 44px;
+    background: var(--navy);
+    color: #ffffff;
+    border: none;
+    border-radius: var(--radius-md);
+    font-size: 15px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    margin-top: 10px;
+    box-shadow: var(--shadow-card);
+  }
+  .auth-submit-btn:hover { background: var(--steel); transform: translateY(-1px); }
+  .auth-submit-btn:active { transform: translateY(1px); }
+  
+  .auth-error-badge {
+    padding: 10px 14px;
+    background: #feecf0;
+    border: 1px solid #fde2e4;
+    color: #cc002d;
+    border-radius: var(--radius-sm);
+    font-size: 13px;
+  }
+  .auth-toggle-link { font-size: 13px; color: var(--text-secondary); text-align: center; margin-top: 4px; }
+  .auth-toggle-link span { color: var(--steel); cursor: pointer; text-decoration: underline; }
+  .profile-close-x { position: absolute; right: 24px; top: 20px; font-size: 24px; color: var(--text-muted); cursor: pointer; }
+  .profile-close-x:hover { color: var(--text-primary); }
+  .profile-modal-overlay { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(56, 73, 89, 0.4); backdrop-filter: blur(4px); z-index: 999; }
+  
+  @keyframes fadeInAuth { from { opacity: 0; transform: scale(0.98) translateY(10px); } to { opacity: 1; transform: scale(1) translateY(0); } }
+  

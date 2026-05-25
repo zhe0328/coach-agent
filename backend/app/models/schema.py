@@ -1,7 +1,33 @@
+from decimal import Decimal
 from pydantic import BaseModel, Field
 from typing import List, Optional, Literal
 
+class UserProfileRequest(BaseModel): 
+    user_id: Optional[int] = Field(None, description="user id")
+    username: str
+    gender: Literal["male", "female", "other"]
+    weight_kg: float
+    height_cm: float
+    fitness_level: Literal["beginner", "intermediate", "advanced"]
+    fitness_goal: str
+    equipments: str
+    injuries: str
+
+
+class UserSignupRequest(UserProfileRequest):
+    password: str
+
+class UserLoginRequest(BaseModel):
+    username: str
+    password: str
+
+class AuthResponse(BaseModel):
+    user_id: int
+    username: str
+    status: str = Field("success", description="鉴权状态标记")
+
 class ChatRequest(BaseModel):
+    session_id: str = Field(..., description="前端生成的唯一会话UUID，用于锁定工作记忆空间")
     user_id: int
     message: str
 
@@ -10,7 +36,7 @@ class RAGSearchSchema(BaseModel):
     query_text: str = Field(
         ..., description="用户的健身问题，例如'如何缓解久坐腰痛'、'波比跳怎么做'"
     )
-    top_k: int = Field(3, description="检索相关的知识条目数量")
+    top_k: int = Field(5, description="检索相关的知识条目数量")
     intent: Literal["exercise", "knowledge", "mixed"] = Field(
         ..., 
         description="exercise: 仅查询特定动作实操/发力感; knowledge: 查询动作组合逻辑/生理机制/课表编排/疲劳等理论; mixed: 两者皆有"
@@ -19,7 +45,7 @@ class RAGSearchSchema(BaseModel):
 class GraphReasoningSchema(BaseModel):
     exercise_name: Optional[str] = Field(None, description="动作名称")
     muscle_name: Optional[str] = Field(None, description="肌肉名称，如'胸肌'")
-    joint_name: Optional[str] = Field(None, description="受损关节名称，如'膝关节'")
+    joint_name: Optional[Literal["脊柱", "肩关节", "膝关节", "踝关节", "腕关节", "肘关节", "髋关节"]] = Field(None, description="受损关节名称，如'膝关节'")
     scenario: Literal[
         "injury_avoidance", "progression", "regression", "synergy", "strengthen_joint"
     ]
@@ -70,6 +96,10 @@ class ToolCallIntent(BaseModel):
     focused_query: str = Field(..., description="针对该工具剥离噪音后的定向用户提问切片（如：'用哑铃练胸'）")
 
 class MacroPlanSchema(BaseModel):
+    routing_mode: Literal["standard", "chat_only"] = Field(
+        "standard", 
+        description="standard: 需要调用工具库; chat_only: 纯寒暄、日常问候或无法触发任何工具的闲聊"
+    )
     selected_tools: List[ToolCallIntent] = Field(..., description="选装的工具链拓扑图")
     routing_reason: str = Field(..., description="做出该工具组合选择的简短依据")
 
@@ -115,7 +145,7 @@ class CoachResponse(BaseModel):
     greeting: str = Field(..., description="开场白")
     
     # 场景 A：精准动作推荐 (SQL/GraphRAG 产出)
-    exercises: Optional[List[ExerciseDetail]] = Field(
+    exercises: Optional[List[ExerciseBase]] = Field(
         None, description="动作卡片列表，若是纯知识回答则为 None"
     )
     
@@ -128,3 +158,8 @@ class CoachResponse(BaseModel):
     safety_alerts: List[str] = Field(default=[], description="安全警告")
     summary: str = Field(..., description="总结建议")
     medical_disclaimer: str = Field("以上建议仅供参考，如需获取医疗建议或诊断信息，请咨询专业人士。", description="免责声明")
+    references: List[str] = Field(
+        default_factory=list, 
+        description="本次执教方案所高保真引用的全部底层 MySQL/Chroma/Neo4j 原始文献与客观规律快照数组"
+    )
+    selected_tools: List[Literal["sql_tool", "graph_tool", "rag_tool"]]

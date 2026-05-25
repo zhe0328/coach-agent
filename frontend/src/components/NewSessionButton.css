@@ -1,0 +1,89 @@
+/* components/NewSessionButton.css */
+
+.new-session-btn {
+    /* ── 基础布局与对齐 ──────────────────────── */
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px; /* 图标与文字的间距 */
+    
+    /* ── 尺寸与轮廓 ─────────────────────────── */
+    padding: 8px 16px;
+    height: 38px;
+    border-radius: var(--radius-xl); /* 使用大圆角，符合头部药丸纽设计胶囊质感 */
+    border: 1px solid var(--border);
+    
+    /* ── 皮肤与色彩（提取你优秀的钢蓝/天蓝调色盘） ─ */
+    background-color: var(--bg-card);
+    color: var(--text-secondary); /* 默认保持低调的钢蓝文字 */
+    font-family: "DM Sans", sans-serif;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    
+    /* ── 动效过渡（确保极致丝滑的 UI 发力感） ───── */
+    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    box-shadow: var(--shadow-card);
+  }
+  
+  /* ── 左侧旋转图标的独立缩放 ──────────────── */
+  .new-session-btn .btn-icon {
+    font-size: 16px;
+    line-height: 1;
+    transition: transform 0.4s ease;
+    display: inline-block;
+  }
+  
+  /* ── 鼠标悬停态（Glow 激活，完美契合 AI 唤醒感） ─ */
+  @media (hover: hover) {
+    .new-session-btn:hover {
+      background-color: var(--accent-light); /* 变成柔和的浅天蓝背景 */
+      color: var(--navy); /* 文字加深为深海蓝 */
+      border-color: var(--accent); /* 边框高亮成天蓝 */
+      box-shadow: 0 4px 12px var(--accent-dim); /* 注入你设计的微弱天蓝发光指纹 */
+      transform: translateY(-1px); /* 微弱悬浮感 */
+    }
+  
+    /* 悬停时，左侧的刷新小箭头自动执行一次 180 度优美空转 */
+    .new-session-btn:hover .btn-icon {
+      transform: rotate(-180deg);
+    }
+  }
+  
+  /* ── 物理点击态（压下阻尼感） ───────────────── */
+  .new-session-btn:active {
+    transform: translateY(1px);
+    box-shadow: inset 0 2px 4px rgba(56, 73, 89, 0.1);
+    background-color: var(--pale); /* 点击时产生深层阻尼回馈 */
+  }
+  
+  /* ── 禁用态防御（当正在加载 loading 时自动卡死） ─ */
+  .new-session-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    transform: none !important;
+    box-shadow: none !important;
+    background-color: var(--bg-surface);
+    color: var(--text-muted);
+    border-color: var(--border-subtle);
+  }
+  
+  /* ── 移动端响应式裁剪（小屏幕下自动隐藏文字只留图标） ─ */
+  @media (max-width: 576px) {
+    .new-session-btn {
+      padding: 0;
+      width: 38px; /* 变成正方形圆圈按钮 */
+      border-radius: 50%;
+    }
+    
+    /* 在小屏幕下，为了防止 Header 拥挤，隐藏“新对话 / 清除记忆”汉字 */
+    .new-session-btn {
+      font-size: 0; 
+    }
+    
+    .new-session-btn .btn-icon {
+      font-size: 18px;
+      margin: 0;
+    }
+  }
+  
