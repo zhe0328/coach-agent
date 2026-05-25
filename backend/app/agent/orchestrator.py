@@ -174,7 +174,6 @@ class CoachOrchestrator:
                                 f"成功将 SQL 的 {len(c_ids)} 个候选 ID 热注入至 "
                                 f"【{task.task_id}.graph_params.candidate_ids】{LogColor.RESET}"
                             )
-                # ==============================================================================
 
             # C. 参数就绪，立即投入真正的执行路由
             logger.info(
@@ -227,7 +226,8 @@ class CoachOrchestrator:
         print("current memory: ", memory)
 
         semantic_profile: list = await self.graph_tool.fetch_user_semantic_memory(user_id)
-        logger.info(f"[Orchestrator] 🧬 长效语义记忆同步成功。当前关节限制: {semantic_profile[0]['injuries']} | 常用器械: {semantic_profile[0]['equipment_list']}")
+        if len(semantic_profile) != 0:
+            logger.info(f"[Orchestrator] 🧬 长效语义记忆同步成功。当前关节限制: {semantic_profile[0]['injuries']} | 常用器械: {semantic_profile[0]['equipment_list']}")
 
 
         # Step 2: 将历史对话转化为标准的消息流背景，供后续大 Planner 理解上下文（比如理解“换一个”代词）
@@ -406,7 +406,7 @@ class CoachOrchestrator:
             trainingLog = TrainingLog(
                 user_id=user_id,
                 session_id=session_id,
-                coach_reply_summary=final_answer.greeting[:50],
+                coach_reply_summary=final_answer.summary,
                 generated_plan_json=final_answer.exercises,
                 is_completed=0
             )
@@ -414,8 +414,8 @@ class CoachOrchestrator:
             if background_tasks:
                 background_tasks.add_task(
                     self.sql_tool.log_chat_transaction,
-                    userRecord = userRecord,
-                    coachRecord = coachRecord
+                    userChatRecord = userRecord,
+                    coachChatRecord = coachRecord
                 )
                 background_tasks.add_task(
                     self.sql_tool.save_training_log,

@@ -6,16 +6,18 @@ class MacroPlannerAgent:
         self.client = client
 
     async def plan(self, user_input: str, history_context: list, semantic_profile: list[dict[str, any]], memory: WorkingMemory) -> MacroPlanSchema:
-        semantic_constraints = (
-            f"【来自图数据库（Neo4j）的当前用户长效硬性指标与物理红线】:\n"
-            f"- 用户当前体能级别硬钢印: {semantic_profile[0].get('level', 'beginner')}\n"
-            f"- 用户当前【主诉受损/严禁过度负载】的身体关节: {', '.join(semantic_profile[0].get('injuries', [])) if semantic_profile[0].get('injuries') else '全身健康无受损'}\n"
-            f"- 用户家里目前【仅拥有且仅能调遣】的常备训练器械库: {', '.join(semantic_profile[0].get('equipment_list', [])) if semantic_profile[0].get('equipment_list') else '自重'}\n\n"
-            f"【最高硬核调度约束】：\n"
-            f"1. 安全红线：如果受损关节包含'脊柱'（如腰椎突出），本轮如果涉及到下肢或背部训练，你【必须且强制】选装图任务实例（task_graph_injury）去从医学图谱层面严格拉黑并剔除高风险重载动作（如硬拉、杠铃深蹲）！\n"
-            f"2. 器械边界：在为工具拆分多任务实例（selected_tools）时，你配置的专属 `focused_query` 和 `reason` 中【必须严格限定器械范围】！如果可用器械库只有'哑铃,弹力带'，你的 `focused_query` 绝对禁止提及'杠铃、单杠'等无中生有的违规设备，防止微观参数提取器发生符号漂移脑补！"
-            f"你【必须且强制】将当前用户的体能级别字面量「{semantic_profile[0].get('level', 'beginner')}」作为核心约束词，直接写入 `focused_query` 文本中！\n"
-        )
+        semantic_constraints = ""
+        if len(semantic_profile) != 0:
+            semantic_constraints = (
+                f"【来自图数据库（Neo4j）的当前用户长效硬性指标与物理红线】:\n"
+                f"- 用户当前体能级别硬钢印: {semantic_profile[0].get('level', 'beginner')}\n"
+                f"- 用户当前【主诉受损/严禁过度负载】的身体关节: {', '.join(semantic_profile[0].get('injuries', [])) if semantic_profile[0].get('injuries') else '全身健康无受损'}\n"
+                f"- 用户家里目前【仅拥有且仅能调遣】的常备训练器械库: {', '.join(semantic_profile[0].get('equipment_list', [])) if semantic_profile[0].get('equipment_list') else '自重'}\n\n"
+                f"【最高硬核调度约束】：\n"
+                f"1. 安全红线：如果受损关节包含'脊柱'（如腰椎突出），本轮如果涉及到下肢或背部训练，你【必须且强制】选装图任务实例（task_graph_injury）去从医学图谱层面严格拉黑并剔除高风险重载动作（如硬拉、杠铃深蹲）！\n"
+                f"2. 器械边界：在为工具拆分多任务实例（selected_tools）时，你配置的专属 `focused_query` 和 `reason` 中【必须严格限定器械范围】！如果可用器械库只有'哑铃,弹力带'，你的 `focused_query` 绝对禁止提及'杠铃、单杠'等无中生有的违规设备，防止微观参数提取器发生符号漂移脑补！"
+                f"你【必须且强制】将当前用户的体能级别字面量「{semantic_profile[0].get('level', 'beginner')}」作为核心约束词，直接写入 `focused_query` 文本中！\n"
+            )
 
         system_prompt = f"""你是一个专业的健身训练调度员（Macro Planner）。你的唯一任务是审视用户的需求，从三个专业工具中选择最合适的组合，并定义它们的依赖拓扑关系。
 
