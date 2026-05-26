@@ -39,7 +39,9 @@ class CoachOrchestrator:
         self.rag_tool = RAGTool()
         self.graph_tool = GraphTool()
         self.client = client
-        self.memory_manager = WorkingMemoryManager(max_history_turns=4)
+        self.memory_manager = WorkingMemoryManager(
+            max_history_turns=4, sql_tool=self.sql_tool
+        )
         self.memory_consolidator = MemoryConsolidator(self.graph_tool, client)
 
     @retry(

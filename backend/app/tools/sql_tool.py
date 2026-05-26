@@ -12,6 +12,7 @@ from app.models.fitness import ChatSession, ChatRecord, AgentPlansLog, TrainingL
 from app.agent.utils.logger import logger, LogColor
 from typing import Optional
 import bcrypt
+import mysql.connector
 
 
 class SQLTool:
@@ -147,7 +148,7 @@ class SQLTool:
 
         return result
 
-    async def search_profile(self, id) -> Optional[UserProfileRequest]:
+    async def search_profile(self, id: int) -> Optional[UserProfileRequest]:
         base_sql = """
         SELECT username, gender,
             weight_kg, height_cm,
@@ -430,6 +431,53 @@ class SQLTool:
                 )
             )
         return results
+
+    async def get_user_sessions(self, user_id: str):
+        sql_query = """SELECT cr.id as id,
+                        cr.session_id as session_id,
+                        cr.role as role,
+                        cr.content as content,
+                        cr.created_at as created_at
+                    FROM chat_records as cr
+                            JOIN chat_sessions cs on cs.session_id = cr.session_id
+                    WHERE user_id = %s"""
+
+        try:
+            with self.db_manager.get_connection() as conn:
+                with conn.cursor(dictionary=True) as cursor:
+                    cursor.execute(sql_query, (user_id,))
+                    rows = cursor.fetchall()
+                    print("rows: ", rows)
+        except mysql.connector.Error as err:
+            raise err
+        
+        sessions_map = {}
+        for r in rows:
+            if r["session_id"] not in sessions_map:
+                sessions_map[r["session_id"]] = {
+                    "session_id": r["session_id"],
+                    "last_message": r["content"][:20] + "...",
+                    "created_at": r["created_at"].strftime("%m-%d %H:%M")
+                }
+                
+        return list(sessions_map.values())
+
+    async def get_session_details(self, session_id):
+        sql_query = """SELECT id, session_id,
+                        role, content, created_at
+                    FROM chat_records
+                    WHERE session_id = %s
+                    ORDER BY id ASC"""
+
+        try:
+            with self.db_manager.get_connection() as conn:
+                with conn.cursor(dictionary=True) as cursor:
+                    cursor.execute(sql_query, (session_id,))
+                    rows = cursor.fetchall()
+        except mysql.connector.Error as err:
+            raise err
+        
+        return rows
 
 async def test():
     sql_tool = SQLTool()

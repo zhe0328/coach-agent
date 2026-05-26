@@ -44,4 +44,8 @@ export const exerciseApi = {
     },
 
     getProfile: (id) => client.get(`v1/user/profile/${id}`),
+
+    getSessions: (user_id) => client.get(`v1/chat/sessions/${user_id}`),
+
+    getSessionDetails: (session_id) => client.get(`v1/chat/history/${session_id}`)
 };
