@@ -1,8 +1,8 @@
 import Recommendation from "./Recommendation";
 
 export default function ChatMessage({ message }) {
-  const isCoach = message.role === "coach";
   console.log("current message: ", message)
+  const isCoach = message.role === "coach";
 
   return (
     <div className={`message ${message.role}`}>
