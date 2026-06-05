@@ -65,7 +65,7 @@ class ExerciseFields(BaseModel):
 
 
 class SQLSearchSchema(ExerciseFields):
-    limit: int = Field(default=10, description="返回动作的数量限制")
+    limit: int = Field(default=4, description="返回动作的数量限制")
 
 
 class ExerciseBase(ExerciseFields):
@@ -94,6 +94,7 @@ class ToolCallIntent(BaseModel):
     )
     reason: str = Field(default="", description="选择该工具的原因")
     focused_query: str = Field(..., description="针对该工具剥离噪音后的定向用户提问切片（如：'用哑铃练胸'）")
+    limit: int = Field(default=4, description="返回动作的数量限制")
 
 class MacroPlanSchema(BaseModel):
     routing_mode: Literal["standard", "chat_only"] = Field(

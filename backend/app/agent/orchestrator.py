@@ -205,6 +205,34 @@ class CoachOrchestrator:
         )
         return final_results
 
+    def _get_graph_scenario(self, plan: FullPlan, task_id: str) -> str | None:
+        for task in plan.tasks:
+            if task.task_id == task_id and task.graph_params:
+                return task.graph_params.scenario
+        return None
+
+    def _trim_injury_avoidance_graph_data(self, data: list[Any], limit: int) -> list[Any]:
+        """
+        injury_avoidance 会为每个高风险动作返回完整平替列表，极易撑爆 Synthesizer 上下文。
+        仅保留前 limit 条拦截记录，且每条最多保留 1 个安全平替动作。
+        """
+        if not isinstance(data, list):
+            return data
+
+        trimmed: list[Any] = []
+        for row in data[:limit]:
+            if not isinstance(row, dict):
+                trimmed.append(row)
+                continue
+
+            row_copy = dict(row)
+            replacements = row_copy.get("safe_replacements")
+            if isinstance(replacements, list):
+                row_copy["safe_replacements"] = replacements[:1]
+            trimmed.append(row_copy)
+
+        return trimmed
+
     async def execute(self, user_id: int, session_id: str, user_input: str, background_tasks: Any = None):
         """
         全栈完全体：具备大脑级网络熔断自愈能力（Planner Fail-Safe）的终极编排引擎
@@ -328,6 +356,19 @@ class CoachOrchestrator:
                 matched_raw_result = raw_data_map.get(t_id, {})
                 live_data = matched_raw_result.get("data", [])
 
+                if intent.tool_name == "sql_tool" and isinstance(live_data, list):
+                    target_k = intent.limit
+                    live_data = live_data[:target_k]
+
+                elif (
+                    intent.tool_name == "graph_tool"
+                    and self._get_graph_scenario(full_plan, t_id) == "injury_avoidance"
+                    and isinstance(live_data, list)
+                ):
+                    live_data = self._trim_injury_avoidance_graph_data(
+                        live_data, intent.limit
+                    )
+
                 snapshot_node = {
                     "task_id": t_id,
                     "tool_name": intent.tool_name,  # 来自大蓝图
@@ -346,7 +387,7 @@ class CoachOrchestrator:
                 is_complete, feedback = await self.analyzer.evaluate(
                     user_input, tool_results
                 )
-                
+
                 # agentPlansLog = AgentPlansLog(
                 #     session_id=session_id,
                 #     user_query=user_input,
