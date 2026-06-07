@@ -24,6 +24,8 @@ class UserLoginRequest(BaseModel):
 class AuthResponse(BaseModel):
     user_id: int
     username: str
+    access_token: str = Field(..., description="JWT bearer token for protected APIs")
+    token_type: str = Field("bearer", description="Token type for Authorization header")
     status: str = Field("success", description="鉴权状态标记")
 
 class ChatRequest(BaseModel):

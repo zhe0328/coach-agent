@@ -50,7 +50,7 @@ def route_after_analyzer(state: CoachAgentState) -> str:
     return "macro_planner"
 
 
-def build_coach_graph(orchestrator):
+def build_coach_graph(orchestrator, *, interrupt_before: list[str] | None = None):
     graph = StateGraph(CoachAgentState)
 
     graph.add_node("load_context", orchestrator._node_load_context)
@@ -97,4 +97,7 @@ def build_coach_graph(orchestrator):
     graph.add_edge("synthesizer", "persist")
     graph.add_edge("persist", END)
 
-    return graph.compile()
+    compile_kwargs = {}
+    if interrupt_before:
+        compile_kwargs["interrupt_before"] = interrupt_before
+    return graph.compile(**compile_kwargs)

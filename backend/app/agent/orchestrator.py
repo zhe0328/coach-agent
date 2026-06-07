@@ -56,6 +56,9 @@ class CoachOrchestrator:
             self.graph_tool, self.sql_tool, client
         )
         self._graph = build_coach_graph(self)
+        self._prep_graph = build_coach_graph(
+            self, interrupt_before=["synthesizer"]
+        )
         self._background_tasks = None
 
     @retry(
@@ -550,6 +553,50 @@ class CoachOrchestrator:
                 self._schedule_agent_plan_log(state)
 
         return {"memory": memory}
+
+    async def execute_stream(
+        self,
+        user_id: int,
+        session_id: str,
+        user_input: str,
+        background_tasks: Any = None,
+    ):
+        """Run planner/tools/analyzer, stream synthesizer tokens, then persist."""
+        self._background_tasks = background_tasks
+
+        initial_state: CoachAgentState = {
+            "user_id": user_id,
+            "session_id": session_id,
+            "user_input": user_input,
+            "max_loops": 3,
+        }
+
+        prep_state = await self._prep_graph.ainvoke(initial_state)
+        macro_plan = prep_state.get("macro_plan")
+        if macro_plan is None:
+            macro_plan = MacroPlanSchema(
+                routing_mode="chat_only",
+                selected_tools=[],
+                routing_reason="无宏观计划，兜底闲聊",
+            )
+
+        executed_tasks = prep_state.get("executed_tasks_snapshot") or []
+        guidance_parts: list[str] = []
+
+        async for chunk in self.synthesizer.stream_guidance(
+            user_input=user_input,
+            macro_plan=macro_plan,
+            executed_tasks=executed_tasks,
+        ):
+            guidance_parts.append(chunk)
+            yield chunk
+
+        coach_response = self.synthesizer.build_response_from_guidance(
+            guidance_text="".join(guidance_parts),
+            macro_plan=macro_plan,
+            executed_tasks=executed_tasks,
+        )
+        await self._node_persist({**prep_state, "coach_response": coach_response})
 
     async def execute(
         self,

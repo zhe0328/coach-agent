@@ -1,3 +1,4 @@
+from app.database.async_db import run_in_thread
 from app.database.neo4j_db import Neo4jManager
 from app.models.schema import GraphReasoningSchema
 from app.agent.utils.logger import logger, LogColor
@@ -8,6 +9,13 @@ import asyncio
 class GraphTool:
     def __init__(self):
         self.db = Neo4jManager()
+
+    async def _run_session(self, fn):
+        def _sync():
+            with self.db.get_session() as session:
+                return fn(session)
+
+        return await run_in_thread(_sync)
 
     async def reason(self, params: GraphReasoningSchema):
         """
@@ -23,6 +31,7 @@ class GraphTool:
             return await self._get_synergistic_movements(params.exercise_name)
         elif params.scenario == "strengthen_joint":
             return await self._strengthen_joint(params.joint_name)
+        return []
 
     async def _avoid_injury(
         self, joint_name: str, candidate_ids: List[str] = None
@@ -70,9 +79,11 @@ class GraphTool:
             e.name AS unsafe_name,
             final_replacements AS safe_replacements
         """
-        with self.db.get_session() as session:
+        def _query(session):
             result = session.run(cypher, joint_name=joint_name, candidate_ids=p_ids)
             return [record.data() for record in result]
+
+        return await self._run_session(_query)
 
     async def _get_regression(self, exercise_name: str) -> List[Dict[str, Any]]:
         """
@@ -112,9 +123,11 @@ class GraphTool:
             RETURN distinct res.id AS id, res.name_zh AS name_zh
             LIMIT 5
             """
-        with self.db.get_session() as session:
+        def _query(session):
             result = session.run(cypher, ex_name=exercise_name)
             return [record.data() for record in result]
+
+        return await self._run_session(_query)
 
     async def _get_progression(self, exercise_name: str) -> List[Dict[str, Any]]:
         """
@@ -153,9 +166,11 @@ class GraphTool:
         RETURN distinct res.id AS id, res.name_zh AS name_zh
         LIMIT 5
         """
-        with self.db.get_session() as session:
+        def _query(session):
             result = session.run(cypher, ex_name=exercise_name)
             return [record.data() for record in result]
+
+        return await self._run_session(_query)
 
     async def _get_synergistic_movements(
         self, exercise_name: str
@@ -190,9 +205,11 @@ class GraphTool:
         ORDER BY next.difficulty DESC
         LIMIT 5
         """
-        with self.db.get_session() as session:
+        def _query(session):
             result = session.run(cypher, ex_name=exercise_name)
             return [record.data() for record in result]
+
+        return await self._run_session(_query)
 
     async def _strengthen_joint(self, joint_name: str) -> List[Dict[str, Any]]:
         """
@@ -219,9 +236,11 @@ class GraphTool:
             collect(distinct m.name) AS protective_muscles
         LIMIT 5
         """
-        with self.db.get_session() as session:
+        def _query(session):
             result = session.run(cypher, joint_name=joint_name)
             return [record.data() for record in result]
+
+        return await self._run_session(_query)
 
     async def init_user_semantic_memory(self, user_id: int, name: str, level: str, injuries: list, equipments: list):
         """
@@ -268,16 +287,21 @@ class GraphTool:
         """
 
         try:
-            with self.db.get_session() as session:
+            def _write(session):
                 session.run(
-                    cypher_injuries, 
-                    user_id=str_user_id, name=name, level=level, injuries=injuries
+                    cypher_injuries,
+                    user_id=str_user_id,
+                    name=name,
+                    level=level,
+                    injuries=injuries,
                 )
                 session.run(
-                    cypher_equipments, 
-                    user_id=str_user_id, equipments=equipments
+                    cypher_equipments,
+                    user_id=str_user_id,
+                    equipments=equipments,
                 )
-                
+
+            await self._run_session(_write)
             logger.info(f"✅ [Semantic Memory] 成功为用户 [{name}] 固化了【防蒸发、防死锁】的长效语义记忆。")
             
         except Exception as e:
@@ -298,10 +322,11 @@ class GraphTool:
                 collect(distinct e.name) as equipment_list
             """
             
-        with self.db.get_session() as session:
+        def _query(session):
             result = session.run(cypher, user_id=str(user_id))
             return [record.data() for record in result]
 
+        return await self._run_session(_query)
 
     async def append_injury_list_to_profile(self, user_id: int, injury_list: List[str]) -> bool:
         """
@@ -322,8 +347,11 @@ class GraphTool:
             ON MATCH SET r.updated_at = timestamp()
         """
         try:
-            with self.db.get_session() as session:
-                session.run(cypher_injury, user_id=str(user_id), injury_list=injury_list)
+            await self._run_session(
+                lambda session: session.run(
+                    cypher_injury, user_id=str(user_id), injury_list=injury_list
+                )
+            )
             logger.info(f"{LogColor.TOOL}[GraphTool] 🛡️ 伤病防线拓扑扩展成功！已并发并入 {injury_list} 拦截线。{LogColor.RESET}")
             return True
         except Exception as e:
@@ -343,10 +371,11 @@ class GraphTool:
             DELETE r
         """
         try:
-            with self.db.get_session() as session:
-                session.run(
+            await self._run_session(
+                lambda session: session.run(
                     cypher, user_id=str(user_id), injury_list=injury_list
                 )
+            )
             logger.info(
                 f"{LogColor.TOOL}[GraphTool] 🩹 已移除伤病限制: {injury_list}{LogColor.RESET}"
             )
@@ -368,10 +397,11 @@ class GraphTool:
             DELETE r
         """
         try:
-            with self.db.get_session() as session:
-                session.run(
+            await self._run_session(
+                lambda session: session.run(
                     cypher, user_id=str(user_id), equip_list=equip_list
                 )
+            )
             logger.info(
                 f"{LogColor.TOOL}[GraphTool] 📦 已移除器材: {equip_list}{LogColor.RESET}"
             )
@@ -397,8 +427,11 @@ class GraphTool:
             MERGE (u)-[:HAS_EQUIPMENT]->(e)
         """
         try:
-            with self.db.get_session() as session:
-                session.run(cypher_equip, user_id=str(user_id), equip_list=equip_list)
+            await self._run_session(
+                lambda session: session.run(
+                    cypher_equip, user_id=str(user_id), equip_list=equip_list
+                )
+            )
             logger.info(f"{LogColor.TOOL}[GraphTool] 🛠️ 器械资产拓扑扩展成功！已并发解禁 {equip_list} 筛选池。{LogColor.RESET}")
             return True
         except Exception as e:
@@ -411,9 +444,11 @@ class GraphTool:
                 WHERE j.name IN ["髋关节", "膝关节", "踝关节"]
                 RETURN ex.name AS exercise_name, j.name AS joint_name
             """
-        with self.db.get_session() as session:
+        def _query(session):
             result = session.run(cypher_query)
             return [record.data() for record in result]
+
+        return await self._run_session(_query)
 
     async def get_all_progression_regressions(self):
         cypher_query = """
@@ -427,9 +462,11 @@ class GraphTool:
                    "PROGRESSION_OF" AS relation_type,
                    m.name AS muscle_name
             """
-        with self.db.get_session() as session:
+        def _query(session):
             result = session.run(cypher_query)
             return [record.data() for record in result]
+
+        return await self._run_session(_query)
 
 async def test():
     graph_tool = GraphTool()

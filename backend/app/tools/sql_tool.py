@@ -60,11 +60,14 @@ class SQLTool:
         final_sql += " LIMIT %s"
         query_params.append(calculated_limit)
 
-        try:
+        def _query():
             with self.db_manager.get_connection() as conn:
                 with conn.cursor(dictionary=True) as cursor:
                     cursor.execute(final_sql, tuple(query_params))
-                    rows = cursor.fetchall()
+                    return cursor.fetchall()
+
+        try:
+            rows = await asyncio.to_thread(_query)
         except mysql.connector.Error as err:
             raise err
         results = []
@@ -113,17 +116,22 @@ class SQLTool:
         JOIN targets t ON esm.target_id = t.id
         WHERE esm.exercise_id = %s
         """
-        try:
+        def _query():
             with self.db_manager.get_connection() as conn:
                 with conn.cursor(dictionary=True) as cursor:
                     cursor.execute(detail_sql, (exercise_id,))
                     row = cursor.fetchone()
-
                     cursor.execute(secondary_sql, (exercise_id,))
                     secondary_rows = cursor.fetchall()
+            return row, secondary_rows
+
+        try:
+            row, secondary_rows = await asyncio.to_thread(_query)
         except mysql.connector.Error as err:
             print(f"Database Error: {err}")
             raise err
+        if not row:
+            return None
         secondary_muscles_zh = [r["name_zh"] for r in secondary_rows]
 
         instructions_zh = row["instructions_zh"]
@@ -155,12 +163,14 @@ class SQLTool:
             fitness_level, fitness_goal, 
             available_equipments_raw, injury_joints_raw 
             FROM users WHERE id = %s """
-        try:
+        def _query():
             with self.db_manager.get_connection() as conn:
                 with conn.cursor(dictionary=True) as cursor:
                     cursor.execute(base_sql, (id,))
-                    row = cursor.fetchone()
+                    return cursor.fetchone()
 
+        try:
+            row = await asyncio.to_thread(_query)
         except mysql.connector.Error as err:
             print(f"Database Error: {err}")
             raise err
@@ -183,17 +193,17 @@ class SQLTool:
         SELECT uc.password_hash, uc.user_id
         from user_credentials uc JOIN users u on u.id = uc.user_id 
         WHERE u.username = %s """
-        try:
+        def _query():
             with self.db_manager.get_connection() as conn:
                 with conn.cursor(dictionary=True) as cursor:
                     cursor.execute(base_sql, (username,))
-                    row = cursor.fetchone()
+                    return cursor.fetchone()
 
+        try:
+            return await asyncio.to_thread(_query)
         except mysql.connector.Error as err:
             print(f"Database Error: {err}")
             raise err
-
-        return row
 
     def _sync_create_or_ignore_session(self, chatSession: ChatSession):
         """[内部同步核线]：会话主表激活"""
@@ -472,11 +482,14 @@ class SQLTool:
             JOIN targets t ON e.target_id = t.id
             JOIN categories c ON e.category_id = c.id
             """
-        try:
+        def _query():
             with self.db_manager.get_connection() as conn:
                 with conn.cursor(dictionary=True) as cursor:
                     cursor.execute(sql_query)
-                    rows = cursor.fetchall()
+                    return cursor.fetchall()
+
+        try:
+            rows = await asyncio.to_thread(_query)
         except mysql.connector.Error as err:
             raise err
         results = []
@@ -504,15 +517,17 @@ class SQLTool:
                             JOIN chat_sessions cs on cs.session_id = cr.session_id
                     WHERE user_id = %s"""
 
-        try:
+        def _query():
             with self.db_manager.get_connection() as conn:
                 with conn.cursor(dictionary=True) as cursor:
                     cursor.execute(sql_query, (user_id,))
-                    rows = cursor.fetchall()
-                    print("rows: ", rows)
+                    return cursor.fetchall()
+
+        try:
+            rows = await asyncio.to_thread(_query)
         except mysql.connector.Error as err:
             raise err
-        
+
         sessions_map = {}
         for r in rows:
             if r["session_id"] not in sessions_map:
@@ -524,6 +539,21 @@ class SQLTool:
                 
         return list(sessions_map.values())
 
+    async def get_session_user_id(self, session_id: str) -> int | None:
+        sql_query = "SELECT user_id FROM chat_sessions WHERE session_id = %s"
+
+        def _query():
+            with self.db_manager.get_connection() as conn:
+                with conn.cursor(dictionary=True) as cursor:
+                    cursor.execute(sql_query, (session_id,))
+                    row = cursor.fetchone()
+                    return row["user_id"] if row else None
+
+        try:
+            return await asyncio.to_thread(_query)
+        except mysql.connector.Error as err:
+            raise err
+
     async def get_session_details(self, session_id):
         sql_query = """SELECT id, session_id,
                         role, content, created_at
@@ -531,15 +561,16 @@ class SQLTool:
                     WHERE session_id = %s
                     ORDER BY id ASC"""
 
-        try:
+        def _query():
             with self.db_manager.get_connection() as conn:
                 with conn.cursor(dictionary=True) as cursor:
                     cursor.execute(sql_query, (session_id,))
-                    rows = cursor.fetchall()
+                    return cursor.fetchall()
+
+        try:
+            return await asyncio.to_thread(_query)
         except mysql.connector.Error as err:
             raise err
-        
-        return rows
 
 async def test():
     sql_tool = SQLTool()

@@ -1,5 +1,6 @@
 import re
 from app.config import settings
+from app.database.async_db import run_in_thread
 from app.database.chroma_db import ChromaManager
 from app.models.schema import RAGSearchSchema, ExerciseDetail, KnowledgeChunk
 from app.agent.utils.logger import logger, LogColor
@@ -89,16 +90,20 @@ class RAGTool:
                 book_limit = max(2, limit - 1)  # 均衡分配
                 exe_limit = max(1, limit - book_limit)
 
-            # 3. 实时换算查询文本的千问 1024 维特征向量
-            query_embedding = self._get_embedding(params.query_text)
+            # 3. 实时换算查询文本的千问 1024 维特征向量（线程池，避免阻塞事件循环）
+            query_embedding = await run_in_thread(
+                self._get_embedding, params.query_text
+            )
             
             final_results = []
             seen_contents = set()  # 去重锁
 
             # === 轨迹 A: 动作库精准装配 ===
             if exe_limit > 0:
-                exe_results = self.exercise_collection.query(
-                    query_embeddings=[query_embedding], n_results=exe_limit
+                exe_results = await run_in_thread(
+                    self.exercise_collection.query,
+                    query_embeddings=[query_embedding],
+                    n_results=exe_limit,
                 )
                 exe_ids = exe_results.get("ids", [[]])[0]
                 exe_docs = exe_results.get("documents", [[]])[0]
@@ -126,8 +131,10 @@ class RAGTool:
 
             # === 轨迹 B: 书籍理论库装配 ===
             if book_limit > 0:
-                book_results = self.book_collection.query(
-                    query_embeddings=[query_embedding], n_results=book_limit
+                book_results = await run_in_thread(
+                    self.book_collection.query,
+                    query_embeddings=[query_embedding],
+                    n_results=book_limit,
                 )
                 book_ids = book_results.get("ids", [[]])[0]
                 book_docs = book_results.get("documents", [[]])[0]
