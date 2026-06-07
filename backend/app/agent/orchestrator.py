@@ -1,31 +1,42 @@
 import asyncio
+import json
+from typing import Any
+
+import httpx
+import mysql.connector
+from chromadb.errors import ChromaError
+from neo4j.exceptions import DriverError, Neo4jError, ServiceUnavailable
+from openai import APIConnectionError, APIStatusError
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
+
+from .analyzer import PlanAnalyzer
+from .graph.coach_graph import build_coach_graph
+from .graph.state import CoachAgentState
+from .memory.memory_consolidator import MemoryConsolidator
+from .memory.memory_manager import WorkingMemoryManager
+from .prompts.skill_guide import get_skill_by_node
 from .roles.macroPlanner import MacroPlannerAgent
 from .roles.smallPlanner import SmallPlannerAgent
 from .roles.synthesizer import CoachSynthesizer
-from .analyzer import PlanAnalyzer
-from .router import WorkflowRouter
-from .memory.memory_manager import WorkingMemoryManager
-from .memory.memory_consolidator import MemoryConsolidator
-from .prompts.skill_guide import get_skill_by_node
-from .utils.logger import logger, LogColor
-from ..tools.sql_tool import SQLTool
-from ..tools.rag_tool import RAGTool
-from ..tools.graph_tool import GraphTool
-from ..models.schema import CoachResponse, ToolTask, FullPlan, SQLSearchSchema, RAGSearchSchema
-from ..models.fitness import AgentPlansLog, ChatRecord, ChatSession, TrainingLog
-import mysql.connector
-import httpx
-from neo4j.exceptions import DriverError, Neo4jError, ServiceUnavailable
-from chromadb.errors import ChromaError
-from tenacity import (
-    retry,
-    stop_after_attempt,
-    wait_exponential,
-    retry_if_exception_type,
+from .utils.logger import LogColor, logger
+from ..models.fitness import ChatRecord, ChatSession, TrainingLog, AgentPlansLog
+from ..models.schema import (
+    CoachResponse,
+    FullPlan,
+    MacroPlanSchema,
+    RAGSearchSchema,
+    SQLSearchSchema,
+    ToolCallIntent,
+    ToolTask,
 )
-from openai import APIConnectionError, APIStatusError
-from typing import Any
-import json
+from ..tools.graph_tool import GraphTool
+from ..tools.rag_tool import RAGTool
+from ..tools.sql_tool import SQLTool
 
 
 class CoachOrchestrator:
@@ -34,7 +45,6 @@ class CoachOrchestrator:
         self.smallPlanner = SmallPlannerAgent(client)
         self.synthesizer = CoachSynthesizer(client, get_skill_by_node("synthesizer"))
         self.analyzer = PlanAnalyzer(client)
-        self.router = WorkflowRouter()
         self.sql_tool = SQLTool()
         self.rag_tool = RAGTool()
         self.graph_tool = GraphTool()
@@ -42,27 +52,27 @@ class CoachOrchestrator:
         self.memory_manager = WorkingMemoryManager(
             max_history_turns=4, sql_tool=self.sql_tool
         )
-        self.memory_consolidator = MemoryConsolidator(self.graph_tool, client)
+        self.memory_consolidator = MemoryConsolidator(
+            self.graph_tool, self.sql_tool, client
+        )
+        self._graph = build_coach_graph(self)
+        self._background_tasks = None
 
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=1, max=4),
-        # 只有遇到网络连接异常、API 超时、或者数据库断连时才触发真正重试，业务逻辑错（如参数不对）不触发重试
         retry=retry_if_exception_type(
-            (  # 1. MySQL 核心网络与连接抖动异常 (排除语法错误)
+            (
                 mysql.connector.errors.OperationalError,
                 mysql.connector.errors.InterfaceError,
-                # 2. Neo4j 核心驱动崩溃、套接字失联、网络不可达异常
                 DriverError,
-                ServiceUnavailable,  # 导入自 neo4j.exceptions
-                # 3. ChromaDB 底层 SQLite 本地文件锁死或 I/O 线程冲突
+                ServiceUnavailable,
                 ChromaError,
-                # 4. 网络瞬时丢包或 HTTP 502/504 超时
                 httpx.TimeoutException,
                 httpx.NetworkError,
             )
         ),
-        reraise=False,  # 重试 3 次依然失败后，不崩掉整个进程，而是向上跑进 except 容灾块
+        reraise=False,
     )
     async def _execute_with_retry(self, task: ToolTask):
         """内部高解耦高吞吐重试原子核"""
@@ -73,14 +83,14 @@ class CoachOrchestrator:
                 "data": await self.sql_tool.search_exercise_base(task.sql_params),
             }
 
-        elif task.tool == "rag_tool" and task.rag_params:
+        if task.tool == "rag_tool" and task.rag_params:
             return {
                 "id": task.task_id,
                 "type": "rag",
                 "data": await self.rag_tool.search_knowledge(task.rag_params),
             }
 
-        elif task.tool == "graph_tool" and task.graph_params:
+        if task.tool == "graph_tool" and task.graph_params:
             return {
                 "id": task.task_id,
                 "type": "graph",
@@ -111,8 +121,12 @@ class CoachOrchestrator:
                 f"{LogColor.TOOL}[ToolDispatcher] ❌ 严重预警：工具 【{task.task_id}】 经历 3 次指数重试后依旧崩溃！"
                 f"参考异常: {e}。系统启动柔性退化防御，向状态机透传空资产...{LogColor.RESET}"
             )
-            # 返回标准的空契约格式，防止下游 Pydantic 解析报错
-            return {"type": task.tool, "data": [], "error": str(type(e).__name__)}
+            return {
+                "id": task.task_id,
+                "type": task.tool,
+                "data": [],
+                "error": str(type(e).__name__),
+            }
 
     async def run_plan(self, plan: FullPlan):
         """
@@ -124,13 +138,9 @@ class CoachOrchestrator:
             f"{LogColor.TOOL}[Scheduler] 🪐 启动拓扑动态调度引擎...{LogColor.RESET}"
         )
 
-        # 1. 建立共享状态机与任务状态映射
-        completed_data = {}  # 存储已完成任务的原始返回数据，用于上下文动态注入
+        completed_data: dict[str, Any] = {}
+        final_results: list[dict[str, Any]] = []
 
-        # 存储最终返回的大包结构
-        final_results = []
-
-        # 内部核心包装协程：负责等待依赖、动态注入强类型参数、执行、最后唤醒下游
         async def execute_task_with_dependencies(
             task: ToolTask, task_events: dict[str, asyncio.Event]
         ):
@@ -193,12 +203,12 @@ class CoachOrchestrator:
 
         # 3. 为所有任务初始化独一无二的同步事件信号（Event）
         task_events = {t.task_id: asyncio.Event() for t in plan.tasks}
-
-        # 4. 全量轰炸：一并抛入 asyncio 运行时环境中，由底层事件循环自动进行拓扑分流
-        worker_coroutines = [
-            execute_task_with_dependencies(t, task_events) for t in plan.tasks
-        ]
-        await asyncio.gather(*worker_coroutines)
+        await asyncio.gather(
+            *[
+                execute_task_with_dependencies(t, task_events)
+                for t in plan.tasks
+            ]
+        )
 
         logger.info(
             f"{LogColor.TOOL}[Scheduler] ✅ 全拓扑流式任务集触发闭环，并发调度圆满结束。{LogColor.RESET}"
@@ -233,265 +243,340 @@ class CoachOrchestrator:
 
         return trimmed
 
-    async def execute(self, user_id: int, session_id: str, user_input: str, background_tasks: Any = None):
-        """
-        全栈完全体：具备大脑级网络熔断自愈能力（Planner Fail-Safe）的终极编排引擎
-        """
-        logger.info(
-            f"\n==================== 🤖 NEW COACH AGENT REQUEST ===================="
+    def _build_fallback_plans(self, user_input: str) -> tuple[MacroPlanSchema, FullPlan]:
+        routing_reason = "远端 Planner 离线，启动本地硬编码全自重安全基础处方调度。"
+        selected_tools = [
+            ToolCallIntent(
+                task_id="fallback_task_sql",
+                tool_name="sql_tool",
+                reason="离线容灾：筛选自重安全动作",
+                focused_query=user_input,
+                limit=10,
+            ),
+            ToolCallIntent(
+                task_id="fallback_task_rag",
+                tool_name="rag_tool",
+                rag_intent="mixed",
+                reason="离线容灾：本地 ChromaDB 语义检索",
+                focused_query=user_input,
+            ),
+        ]
+        macro_plan = MacroPlanSchema(
+            routing_mode="standard",
+            selected_tools=selected_tools,
+            routing_reason=routing_reason,
         )
-        logger.info(f"用户输入 (User Input): '{user_input}'")
-
-        chatSession = ChatSession(
-            session_id=session_id, 
-            user_id=user_id
+        full_plan = FullPlan(
+            logic_chain=routing_reason,
+            tasks=[
+                ToolTask(
+                    task_id="fallback_task_sql",
+                    tool="sql_tool",
+                    sql_params=SQLSearchSchema(equipment_zh="自重", limit=10),
+                    depends_on=[],
+                ),
+                ToolTask(
+                    task_id="fallback_task_rag",
+                    tool="rag_tool",
+                    rag_params=RAGSearchSchema(
+                        query_text=user_input, top_k=2, intent="mixed"
+                    ),
+                    depends_on=[],
+                ),
+            ],
         )
-        await self.sql_tool.create_or_ignore_session(chatSession)
+        return macro_plan, full_plan
 
-        current_step = 0
-        max_loops = 3
-        last_logic_chain = ""
-        tool_results = []
+    def _build_executed_tasks_snapshot(
+        self,
+        macro_plan: MacroPlanSchema,
+        full_plan: FullPlan,
+        tool_results: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        raw_data_map = {r.get("id"): r for r in tool_results if r.get("id")}
+        snapshot: list[dict[str, Any]] = []
+
+        for intent in macro_plan.selected_tools:
+            t_id = intent.task_id
+            matched = raw_data_map.get(t_id, {})
+            live_data = matched.get("data", [])
+
+            if intent.tool_name == "sql_tool" and isinstance(live_data, list):
+                live_data = live_data[: intent.limit]
+
+            elif (
+                intent.tool_name == "graph_tool"
+                and self._get_graph_scenario(full_plan, t_id) == "injury_avoidance"
+                and isinstance(live_data, list)
+            ):
+                live_data = self._trim_injury_avoidance_graph_data(
+                    live_data, intent.limit
+                )
+
+            snapshot.append(
+                {
+                    "task_id": t_id,
+                    "tool_name": intent.tool_name,
+                    "reason": intent.reason,
+                    "focused_query": intent.focused_query,
+                    "data": live_data,
+                }
+            )
+
+        return snapshot
+
+    def _build_agent_plans_log(self, state: CoachAgentState) -> AgentPlansLog | None:
+        macro_plan = state.get("macro_plan")
+        full_plan = state.get("full_plan")
+        if not macro_plan or not full_plan:
+            return None
+
+        memory = state["memory"]
+        return AgentPlansLog(
+            id=None,
+            session_id=state["session_id"],
+            user_query=state["user_input"],
+            loop_retry_count=memory.current_loop_retry_count,
+            macro_blueprint=macro_plan.selected_tools,
+            native_full_plan=full_plan,
+            executed_results=json.dumps(
+                state.get("executed_tasks_snapshot", []),
+                ensure_ascii=False,
+                default=str,
+            ),
+            analyzer_final_reason=state.get("analyzer_feedback"),
+        )
+
+    def _schedule_agent_plan_log(self, state: CoachAgentState) -> None:
+        if not self._background_tasks:
+            return
+        agent_plans_log = self._build_agent_plans_log(state)
+        if agent_plans_log is None:
+            return
+        self._background_tasks.add_task(
+            self.sql_tool.log_agent_plan_decision,
+            agentPlansLog=agent_plans_log,
+        )
+
+    # ── LangGraph nodes ─────────────────────────────────────────────
+
+    async def _node_load_context(self, state: CoachAgentState) -> dict:
+        user_id = state["user_id"]
+        session_id = state["session_id"]
+
+        await self.sql_tool.create_or_ignore_session(
+            ChatSession(session_id=session_id, user_id=user_id)
+        )
+
         memory = await self.memory_manager.get_session_memory(session_id)
-        print("current memory: ", memory)
-
-        semantic_profile: list = await self.graph_tool.fetch_user_semantic_memory(user_id)
-        if len(semantic_profile) != 0:
-            logger.info(f"[Orchestrator] 🧬 长效语义记忆同步成功。当前关节限制: {semantic_profile[0]['injuries']} | 常用器械: {semantic_profile[0]['equipment_list']}")
-
-
-        # Step 2: 将历史对话转化为标准的消息流背景，供后续大 Planner 理解上下文（比如理解“换一个”代词）
-        history_messages = self.memory_manager.compile_to_llm_messages(memory)
-
-        # 确保每一轮外网发问进入时，状态机计数清零
         memory.reset_loop_state()
 
-        while memory.current_loop_retry_count < max_loops:
-            logger.info(f"\n--- 🔄 [ReAct 迭代第 {current_step + 1} 轮开始] ---")
-
-            try:
-                # 正常路径：尝试连接远端 OpenAI 进行精细化意图规划
-                logger.info(
-                    f"{LogColor.PLAN}[Planner] 🧠 正在构建任务蓝图...){LogColor.RESET}"
-                )
-
-                macro_plan = await self.macroPlanner.plan(user_input, history_messages, semantic_profile, memory)
-
-                if macro_plan.routing_mode == "chat_only" or not macro_plan.selected_tools:
-                    print("macro_plan: ", macro_plan)
-                    logger.info(
-                        f"{LogColor.TOOL}[Orchestrator] 🍃 智能路由命中：【纯闲聊/社交寒暄】。开启零工具直驱通道...{LogColor.RESET}"
-                    )
-
-                    # 零数据直接送入 Synthesizer，并透传用户的原始提问
-                    coach_response = await self.synthesizer.generate_response(
-                        macro_plan=macro_plan,
-                        executed_tasks=[],  # 👈 空资产无伤透传
-                        user_input=user_input,
-                    )
-
-                    # 同样将这轮温馨的寒暄对话沉淀落盘进 Redis，维持多轮聊天连续性
-                    full_reply_text = coach_response.model_dump_json()
-                    memory.add_message(role="user", content=user_input)
-                    memory.add_message(role="assistant", content=full_reply_text)
-                    memory.reset_loop_state()
-                    await self.memory_manager.save_session_memory(session_id, memory)
-
-                    logger.info(f"[Orchestrator] ✅ 纯闲聊直驱交互圆满闭环，工作记忆已持久化。")
-                    return coach_response
-
-                full_plan = await self.smallPlanner.assemble_full_plan(macro_plan)
-
-                last_logic_chain = full_plan.logic_chain
-                logger.info(
-                    f'{LogColor.PLAN}[Planner] 思维链 (Logic Chain): "{last_logic_chain}"{LogColor.RESET}'
-                )
-                logger.info(
-                    f'{LogColor.PLAN}[Planner] 任务 (Full Plan): "{full_plan}"{LogColor.RESET}'
-                )
-
-            except (APIConnectionError, APIStatusError) as planner_err:
-                logger.error(
-                    f"{LogColor.PLAN}[Planner] 🚨 严重灾难预警：远端大模型机房失联！"
-                    f"异常快照: {type(planner_err).__name__} -> {planner_err}。全栈启动『脊髓反射静态蓝图』容灾！{LogColor.RESET}"
-                )
-
-                last_logic_chain = (
-                    "远端 Planner 离线，启动本地硬编码全自重安全基础处方调度。"
-                )
-
-                full_plan = FullPlan(
-                    logic_chain=last_logic_chain,
-                    tasks=[
-                        # 任务一：SQL 基础粗筛任务（绝对放宽门槛，只搜最安全的自重动作）
-                        ToolTask(
-                            task_id="fallback_task_sql",
-                            tool="sql_tool",
-                            sql_params=SQLSearchSchema(equipment_zh="自重", limit=10),
-                            depends_on=[],  # 无依赖，直接冲锋
-                        ),
-                        # 任务二：RAG 百科语义盲搜（直接拿着用户提问去搜本地 ChromaDB 缓存，本地计算 0 网络依赖！）
-                        ToolTask(
-                            task_id="fallback_task_rag",
-                            tool="rag_tool",
-                            rag_params=RAGSearchSchema(query_text=user_input, top_k=2),
-                            depends_on=[],
-                        ),
-                    ],
-                )
-                # 既然大模型已经断网，强行终止后续的 ReAct 环路，本次请求以该静态蓝图直接一轮执行到底
-                current_step = max_loops
-
-            # 3. 并发调度当前周期的工具集（无论是大模型生成的，还是我们刚在 except 里面伪造出来的）
-            step_results = await self.run_plan(full_plan)
-            tool_results = step_results  # 状态多轮隔离清洗
-
-            raw_data_map = {r.get("id"): r for r in tool_results}
-            executed_tasks_snapshot = []
-
-            for intent in macro_plan.selected_tools:
-                t_id = intent.task_id
-
-                # 从执行器的账单里，定点捞出这个任务跑出来的核心资产（data）和生参数（params）
-                matched_raw_result = raw_data_map.get(t_id, {})
-                live_data = matched_raw_result.get("data", [])
-
-                if intent.tool_name == "sql_tool" and isinstance(live_data, list):
-                    target_k = intent.limit
-                    live_data = live_data[:target_k]
-
-                elif (
-                    intent.tool_name == "graph_tool"
-                    and self._get_graph_scenario(full_plan, t_id) == "injury_avoidance"
-                    and isinstance(live_data, list)
-                ):
-                    live_data = self._trim_injury_avoidance_graph_data(
-                        live_data, intent.limit
-                    )
-
-                snapshot_node = {
-                    "task_id": t_id,
-                    "tool_name": intent.tool_name,  # 来自大蓝图
-                    "reason": intent.reason,  # 来自大蓝图
-                    "focused_query": intent.focused_query,  # 来自大蓝图
-                    "data": live_data,  # 来自底层执行结算
-                }
-                executed_tasks_snapshot.append(snapshot_node)
-
-
-            # 4. 如果是正常模型路径，继续启动质检引擎审查
-            if type(planner_err if "planner_err" in locals() else None) not in [
-                APIConnectionError,
-                APIStatusError,
-            ]:
-                is_complete, feedback = await self.analyzer.evaluate(
-                    user_input, tool_results
-                )
-
-                # agentPlansLog = AgentPlansLog(
-                #     session_id=session_id,
-                #     user_query=user_input,
-                #     loop_retry_count=memory.current_loop_retry_count,
-                #     macro_blueprint=macro_plan.selected_tools,
-                #     native_full_plan=full_plan,
-                #     executed_results=json.dumps(executed_tasks_snapshot, ensure_ascii=False),
-                #     analyzer_final_reason=feedback
-                # )
-                if not is_complete:
-                    # if background_tasks:
-                    #     background_tasks.add_task(
-                    #         self.sql_tool.log_agent_plan_decision,
-                    #         agentPlansLog=agentPlansLog
-                    #     )
-                    memory.latest_analyzer_feedback = feedback
-                    memory.current_loop_retry_count += 1
-                    await self.memory_manager.save_session_memory(session_id, memory)
-                    logger.warning(
-                        f"[Orchestrator] 🚨 质检被打回！反思已写回 Redis，正在触发自愈重规划..."
-                    )
-
-                route_decision = self.router.should_stop(
-                    is_complete, current_step, max_loops
-                )
-                if route_decision == "synthesize":
-                    break
-            else:
-                # 脑死亡模式下不通过 Analyzer（因为 Analyzer 也需要连网大模型），直接跳出
-                break
-
-            current_step += 1
-
-        # 5. 最终合成 (Synthesis)
-        logger.info(
-            f"\n{LogColor.SYNTH}[Synthesizer] ✍️ 凝聚资产，正在生成最终的教练响应...{LogColor.RESET}"
-        )
-        try:
-            final_answer: CoachResponse = await self.synthesizer.generate_response(
-                user_input, macro_plan, executed_tasks_snapshot
+        semantic_profile = await self.graph_tool.fetch_user_semantic_memory(user_id)
+        if semantic_profile:
+            logger.info(
+                f"[Orchestrator] 🧬 语义记忆: injuries={semantic_profile[0].get('injuries')} "
+                f"equipment={semantic_profile[0].get('equipment_list')}"
             )
-            full_reply_text = final_answer.model_dump_json()
+
+        return {
+            "memory": memory,
+            "history_messages": self.memory_manager.compile_to_llm_messages(memory),
+            "semantic_profile": semantic_profile or [],
+            "loop_count": 0,
+            "max_loops": 3,
+            "planner_offline": False,
+            "skip_analyzer": False,
+            "is_complete": False,
+            "tool_results": [],
+            "executed_tasks_snapshot": [],
+        }
+
+    async def _node_macro_planner(self, state: CoachAgentState) -> dict:
+        loop_count = state.get("loop_count", 0)
+        logger.info(f"\n--- 🔄 [ReAct 第 {loop_count + 1} 轮] macro_planner ---")
+
+        try:
+            macro_plan = await self.macroPlanner.plan(
+                state["user_input"],
+                state["history_messages"],
+                state["semantic_profile"],
+                state["memory"],
+            )
+            return {
+                "macro_plan": macro_plan,
+                "planner_offline": False,
+                "skip_analyzer": False,
+                "routing_mode": macro_plan.routing_mode,
+            }
+        except (APIConnectionError, APIStatusError) as err:
+            logger.error(
+                f"{LogColor.PLAN}[Planner] 🚨 LLM 离线: {type(err).__name__} → fallback{LogColor.RESET}"
+            )
+            macro_plan, full_plan = self._build_fallback_plans(state["user_input"])
+            return {
+                "macro_plan": macro_plan,
+                "full_plan": full_plan,
+                "planner_offline": True,
+                "skip_analyzer": True,
+                "routing_mode": "fallback",
+            }
+
+    async def _node_small_planner(self, state: CoachAgentState) -> dict:
+        macro_plan = state["macro_plan"]
+        full_plan = await self.smallPlanner.assemble_full_plan(macro_plan)
+        logger.info(
+            f'{LogColor.PLAN}[Planner] FullPlan: {len(full_plan.tasks)} tasks — '
+            f'"{full_plan.logic_chain}"{LogColor.RESET}'
+        )
+        return {"full_plan": full_plan}
+
+    async def _node_tool_execute(self, state: CoachAgentState) -> dict:
+        full_plan = state["full_plan"]
+        macro_plan = state["macro_plan"]
+
+        if not full_plan or not macro_plan:
+            return {"tool_results": [], "executed_tasks_snapshot": []}
+
+        tool_results = await self.run_plan(full_plan)
+        executed_tasks_snapshot = self._build_executed_tasks_snapshot(
+            macro_plan, full_plan, tool_results
+        )
+        return {
+            "tool_results": tool_results,
+            "executed_tasks_snapshot": executed_tasks_snapshot,
+        }
+
+    async def _node_analyzer(self, state: CoachAgentState) -> dict:
+        is_complete, feedback = await self.analyzer.evaluate(
+            state["user_input"], state.get("tool_results", [])
+        )
+
+        memory = state["memory"]
+        loop_count = state.get("loop_count", 0)
+        updates: dict[str, Any] = {
+            "is_complete": is_complete,
+            "analyzer_feedback": feedback,
+        }
+
+        if not is_complete:
+            memory.latest_analyzer_feedback = feedback
+            memory.current_loop_retry_count += 1
+            await self.memory_manager.save_session_memory(
+                state["session_id"], memory
+            )
+            updates["memory"] = memory
+            updates["loop_count"] = loop_count + 1
+            logger.warning(
+                "[Orchestrator] 🚨 质检未通过，反馈已写入 Redis，重试 macro_planner"
+            )
+            self._schedule_agent_plan_log({**state, **updates})
+
+        return updates
+
+    async def _node_synthesizer(self, state: CoachAgentState) -> dict:
+        macro_plan = state.get("macro_plan")
+        if macro_plan is None:
+            macro_plan = MacroPlanSchema(
+                routing_mode="chat_only",
+                selected_tools=[],
+                routing_reason="无宏观计划，兜底闲聊",
+            )
+
+        logger.info(
+            f"\n{LogColor.SYNTH}[Synthesizer] ✍️ 生成教练响应...{LogColor.RESET}"
+        )
+
+        try:
+            coach_response = await self.synthesizer.generate_response(
+                user_input=state["user_input"],
+                macro_plan=macro_plan,
+                executed_tasks=state.get("executed_tasks_snapshot") or [],
+            )
+        except Exception as e:
+            logger.error(f"[Synthesizer] 合成失败: {e}")
+            coach_response = (
+                "🏋️‍♂️【本地离线智能教练提示】：当前网络较弱，系统已自动切换至本地无网纯自重防御模式。"
+                "为您本地安全离线匹配到如下计划，请参考练习："
+            )
+
+        return {"coach_response": coach_response}
+
+    async def _node_persist(self, state: CoachAgentState) -> dict:
+        session_id = state["session_id"]
+        user_id = state["user_id"]
+        user_input = state["user_input"]
+        memory = state["memory"]
+        coach_response = state.get("coach_response")
+
+        if isinstance(coach_response, CoachResponse):
+            full_reply_text = coach_response.model_dump_json()
             memory.add_message(role="user", content=user_input)
             memory.add_message(role="assistant", content=full_reply_text)
-
             memory.reset_loop_state()
             await self.memory_manager.save_session_memory(session_id, memory)
 
-            userRecord = ChatRecord(
-                session_id=session_id,
-                role="user",
-                content=user_input,
+            user_record = ChatRecord(
+                session_id=session_id, role="user", content=user_input
             )
-            coachRecord = ChatRecord(
+            coach_record = ChatRecord(
                 session_id=session_id,
                 role="assistant",
-                content=final_answer.detailed_guidance,
+                content=coach_response.detailed_guidance,
             )
-            trainingLog = TrainingLog(
+            training_log = TrainingLog(
                 user_id=user_id,
                 session_id=session_id,
-                coach_reply_summary=final_answer.summary,
-                generated_plan_json=final_answer.exercises,
-                is_completed=0
+                coach_reply_summary=coach_response.summary,
+                generated_plan_json=coach_response.exercises,
+                is_completed=0,
             )
 
-            if background_tasks:
-                background_tasks.add_task(
+            if self._background_tasks:
+                self._background_tasks.add_task(
                     self.sql_tool.log_chat_transaction,
-                    userChatRecord = userRecord,
-                    coachChatRecord = coachRecord
+                    userChatRecord=user_record,
+                    coachChatRecord=coach_record,
                 )
-                background_tasks.add_task(
+                self._background_tasks.add_task(
                     self.sql_tool.save_training_log,
-                    trainingLog = trainingLog
+                    trainingLog=training_log,
                 )
-
-                # background_tasks.add_task(
-                #     self.sql_tool.log_agent_plan_decision,
-                #     agentPlansLog=agentPlansLog
-                # )
-
-                background_tasks.add_task(
+                self._background_tasks.add_task(
                     self.memory_consolidator.consolidate_session_to_graph,
                     user_id=user_id,
-                    user_query=user_input
+                    user_query=user_input,
+                    semantic_profile=state.get("semantic_profile"),
                 )
-        except Exception as e:
-            logger.error("[Synthesizer] 合成大模型断线，触发最终话术软着陆:", e)
-            # 终极无网肉眼降级话术
-            final_answer = "🏋️‍♂️【本地离线智能教练提示】：当前网络较弱，系统已自动切换至本地无网纯自重防御模式。为您本地安全离线匹配到如下计划，请参考练习："
+                self._schedule_agent_plan_log(state)
+
+        return {"memory": memory}
+
+    async def execute(
+        self,
+        user_id: int,
+        session_id: str,
+        user_input: str,
+        background_tasks: Any = None,
+    ):
+        logger.info(
+            f"\n==================== 🤖 NEW COACH AGENT REQUEST ===================="
+        )
+        logger.info(f"用户输入: '{user_input}'")
+
+        self._background_tasks = background_tasks
+
+        initial_state: CoachAgentState = {
+            "user_id": user_id,
+            "session_id": session_id,
+            "user_input": user_input,
+            "max_loops": 3,
+        }
+
+        final_state = await self._graph.ainvoke(initial_state)
+        coach_response = final_state.get("coach_response")
 
         logger.info(
-            f"{LogColor.SYNTH}[Synthesizer] ✨ 最终响应合成完毕，成功推送至前端展示！{LogColor.RESET}"
-        )
-        logger.info(
+            f"{LogColor.SYNTH}[Synthesizer] ✨ 完成。{LogColor.RESET}\n"
             f"===================================================================\n"
         )
-        print("final_answer: ", final_answer)
-        return final_answer
-
-    async def _generate_hyde(self, prompt: str):
-        # 快速生成一个伪向量
-        res = self.client.embeddings.create(
-            input=prompt, model="text-embedding-3-small"
-        )
-        return res.data[0].embedding
+        return coach_response
