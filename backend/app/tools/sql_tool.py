@@ -267,6 +267,17 @@ class SQLTool:
                     for item in agentPlanLog.macro_blueprint
                 ]
 
+                full_plan_payload = (
+                    agentPlanLog.native_full_plan.model_dump()
+                    if hasattr(agentPlanLog.native_full_plan, "model_dump")
+                    else agentPlanLog.native_full_plan
+                )
+                executed_payload = agentPlanLog.executed_results
+                if not isinstance(executed_payload, str):
+                    executed_payload = json.dumps(
+                        executed_payload, ensure_ascii=False, default=str
+                    )
+
                 cursor.execute(
                     query,
                     (
@@ -274,8 +285,8 @@ class SQLTool:
                         agentPlanLog.user_query,
                         agentPlanLog.loop_retry_count,
                         json.dumps(extracted_data, ensure_ascii=False),
-                        json.dumps(agentPlanLog.native_full_plan, ensure_ascii=False),
-                        json.dumps(agentPlanLog.executed_results, ensure_ascii=False),
+                        json.dumps(full_plan_payload, ensure_ascii=False, default=str),
+                        executed_payload,
                         agentPlanLog.analyzer_final_reason,
                     ),
                 )
@@ -395,6 +406,57 @@ class SQLTool:
 
     async def update_user_profile(self, userSignupRequest: UserSignupRequest):
         await asyncio.to_thread(self._update_user_profile, userSignupRequest)
+
+    def _sync_get_user_semantic_raw(self, user_id: int) -> dict | None:
+        query = """
+            SELECT fitness_level, available_equipments_raw, injury_joints_raw
+            FROM users WHERE id = %s
+        """
+        with self.db_manager.get_connection() as conn:
+            with conn.cursor(dictionary=True) as cursor:
+                cursor.execute(query, (user_id,))
+                return cursor.fetchone()
+
+    def _sync_update_user_semantic_raw(
+        self,
+        user_id: int,
+        injury_joints_raw: str | None,
+        available_equipments_raw: str,
+    ) -> None:
+        query = """
+            UPDATE users
+            SET injury_joints_raw = %s,
+                available_equipments_raw = %s,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s
+        """
+        with self.db_manager.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    query,
+                    (
+                        injury_joints_raw or None,
+                        available_equipments_raw or "自重",
+                        user_id,
+                    ),
+                )
+            conn.commit()
+
+    async def get_user_semantic_raw(self, user_id: int) -> dict | None:
+        return await asyncio.to_thread(self._sync_get_user_semantic_raw, user_id)
+
+    async def update_user_semantic_raw(
+        self,
+        user_id: int,
+        injury_joints_raw: str | None,
+        available_equipments_raw: str,
+    ) -> None:
+        await asyncio.to_thread(
+            self._sync_update_user_semantic_raw,
+            user_id,
+            injury_joints_raw,
+            available_equipments_raw,
+        )
 
     async def get_all_exercises(self) -> list[ExerciseBase]:
         sql_query = """

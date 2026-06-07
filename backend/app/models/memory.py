@@ -50,6 +50,36 @@ class InjurySnifferSchema(BaseModel):
         description="简短摘录或分析用户对话中透露出伤病的客观依据（如：用户主诉深蹲时膝盖有弹响）。"
     )
 
-    has_new_equipment: bool = Field(..., description="用户是否提到了自己【新买了解锁、或者可以用】的新器材。")
-    equipment_name: Optional[List[str]] = Field(None, )
+    has_new_equipment: bool = Field(
+        ..., description="用户是否提到了自己【新买了解锁、或者可以用】的新器材。"
+    )
+    equipment_name: Optional[List[str]] = Field(None)
+
+    has_injury_resolution: bool = Field(
+        False,
+        description="用户明确表示档案中的伤病/不适已恢复、痊愈或不再构成训练限制。",
+    )
+    resolved_joints: Optional[List[JOINT_LITERAL]] = Field(
+        None,
+        description="已从不适中恢复的关节。仅当 has_injury_resolution 为 true 时填写。",
+    )
+
+    has_equipment_removal: bool = Field(
+        False,
+        description="用户明确表示不再拥有、无法使用或不再使用某些器材。",
+    )
+    removed_equipment: Optional[List[str]] = Field(None)
+
+    conflicts_with_stored_profile: bool = Field(
+        False,
+        description="本轮原话是否与已存储的伤病/器械画像存在明显矛盾。",
+    )
+    conflict_resolution: Literal["trust_current_input", "keep_stored_profile", "none"] = Field(
+        "none",
+        description="出现矛盾时的裁决：优先采信本轮原话 / 保留档案 / 无矛盾。",
+    )
+    conflict_reason: str = Field(
+        "",
+        description="若存在矛盾，简述矛盾点与裁决依据。",
+    )
     

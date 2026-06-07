@@ -330,6 +330,56 @@ class GraphTool:
             logger.error(f"[GraphTool] 后台并发追加伤病红线遭遇异常: {e}")
             return False
 
+    async def remove_injuries_from_profile(
+        self, user_id: int, injury_list: List[str]
+    ) -> bool:
+        """从用户语义画像中移除已恢复/不再受限的关节红线。"""
+        if not injury_list:
+            return True
+
+        cypher = """
+            MATCH (u:User {user_id: $user_id})-[r:HAS_INJURY]->(j:Joint)
+            WHERE j.name IN $injury_list
+            DELETE r
+        """
+        try:
+            with self.db.get_session() as session:
+                session.run(
+                    cypher, user_id=str(user_id), injury_list=injury_list
+                )
+            logger.info(
+                f"{LogColor.TOOL}[GraphTool] 🩹 已移除伤病限制: {injury_list}{LogColor.RESET}"
+            )
+            return True
+        except Exception as e:
+            logger.error(f"[GraphTool] 移除伤病红线失败: {e}")
+            return False
+
+    async def remove_equipment_from_profile(
+        self, user_id: int, equip_list: List[str]
+    ) -> bool:
+        """从用户语义画像中移除不再拥有的器材边界。"""
+        if not equip_list:
+            return True
+
+        cypher = """
+            MATCH (u:User {user_id: $user_id})-[r:HAS_EQUIPMENT]->(e:Equipment)
+            WHERE e.name IN $equip_list
+            DELETE r
+        """
+        try:
+            with self.db.get_session() as session:
+                session.run(
+                    cypher, user_id=str(user_id), equip_list=equip_list
+                )
+            logger.info(
+                f"{LogColor.TOOL}[GraphTool] 📦 已移除器材: {equip_list}{LogColor.RESET}"
+            )
+            return True
+        except Exception as e:
+            logger.error(f"[GraphTool] 移除器材连线失败: {e}")
+            return False
+
     async def append_equipment_list_to_profile(self, user_id: int, equip_list: List[str]) -> bool:
         """
         [多维矩阵解包版]：在对话结束后，向用户的语义记忆动态追加【多个新解锁器材】边界
