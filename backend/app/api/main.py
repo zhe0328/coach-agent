@@ -313,3 +313,31 @@ async def get_session_details(
     except Exception as e:
         logger.error(f"API Error fetching session {session_id}: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
+
+@app.get("/v1/chat/sessions/{user_id}")
+async def get_user_sessions(user_id: str):
+    try:
+        result = await sql_tool.get_user_sessions(user_id)
+        if not result:
+            raise HTTPException(
+                status_code=404, detail=f"User with id {id} not found"
+            )
+
+        return result
+    except Exception as e:
+        print(f"API Error fetching user {user_id}: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@app.get("/v1/chat/history/{session_id}")
+async def get_session_details(session_id: str):
+    try:
+        result = await sql_tool.get_session_details(session_id)
+        if not result:
+            raise HTTPException(
+                status_code=404, detail=f"User with id {id} not found"
+            )
+
+        return result
+    except Exception as e:
+        print(f"API Error fetching session {session_id}: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
