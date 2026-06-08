@@ -1,4 +1,5 @@
 import json
+import re
 import asyncio
 from app.database.mysql_db import MySQLManager
 from app.models.schema import (
@@ -13,6 +14,24 @@ from app.agent.utils.logger import logger, LogColor
 from typing import Optional
 import bcrypt
 import mysql.connector
+
+
+def _normalize_equipment_list(value: str | list[str] | None) -> list[str]:
+    """将单个器材、逗号分隔字符串或列表统一为去重后的器材名列表。"""
+    if not value:
+        return []
+    if isinstance(value, list):
+        raw_items = value
+    else:
+        raw_items = re.split(r"[,，、/|]", value)
+    seen: set[str] = set()
+    normalized: list[str] = []
+    for item in raw_items:
+        name = item.strip()
+        if name and name not in seen:
+            seen.add(name)
+            normalized.append(name)
+    return normalized
 
 
 class SQLTool:
@@ -37,7 +56,6 @@ class SQLTool:
 
         condition_map = {
             "t.name_zh": params.target_zh,
-            "eq.name_zh": params.equipment_zh,
             "c.name_zh": params.category_zh,
             "b.name_zh": params.body_part_zh,
             "e.difficulty": params.difficulty,
@@ -46,6 +64,12 @@ class SQLTool:
 
         where_clauses = []
         query_params = []
+
+        equipment_values = _normalize_equipment_list(params.equipment_zh)
+        if equipment_values:
+            equipment_clauses = ["eq.name_zh LIKE %s"] * len(equipment_values)
+            where_clauses.append(f"({' OR '.join(equipment_clauses)})")
+            query_params.extend(f"%{name}%" for name in equipment_values)
 
         for column, value in condition_map.items():
             if value:
@@ -84,7 +108,8 @@ class SQLTool:
                 )
             )
         logger.info(
-            f"{LogColor.TOOL}[SQLTool] 🔍 正在输出SQL调用结果，Result: '{results}'{LogColor.RESET}"
+            f"{LogColor.TOOL}[SQLTool] 🔍 SQL 筛选 equipment={equipment_values or None} "
+            f"命中 {len(results)} 条{LogColor.RESET}"
         )
         return results
 
@@ -515,7 +540,8 @@ class SQLTool:
                         cr.created_at as created_at
                     FROM chat_records as cr
                             JOIN chat_sessions cs on cs.session_id = cr.session_id
-                    WHERE user_id = %s"""
+                    WHERE cs.user_id = %s
+                    ORDER BY cr.id DESC"""
 
         def _query():
             with self.db_manager.get_connection() as conn:
@@ -547,7 +573,9 @@ class SQLTool:
                 with conn.cursor(dictionary=True) as cursor:
                     cursor.execute(sql_query, (session_id,))
                     row = cursor.fetchone()
-                    return row["user_id"] if row else None
+                    if not row:
+                        return None
+                    return int(row["user_id"])
 
         try:
             return await asyncio.to_thread(_query)

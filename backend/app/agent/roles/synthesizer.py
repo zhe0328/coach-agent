@@ -1,6 +1,7 @@
 from collections.abc import AsyncIterator
 
 from ..prompts.skill_guide import SYNTHESIZER_SKILL, COACH_PERSONA
+from ..utils.logger import logger
 from ...config import settings
 from ...models.schema import CoachResponse, ExerciseBase, MacroPlanSchema
 
@@ -158,9 +159,13 @@ class CoachSynthesizer:
                     stream=True,
                 )
                 for chunk in stream:
-                    delta = chunk.choices[0].delta.content
-                    if delta:
-                        chunk_queue.put(delta)
+                    if not chunk.choices:
+                        continue
+                    delta = chunk.choices[0].delta
+                    if delta and delta.content:
+                        chunk_queue.put(delta.content)
+            except Exception as exc:
+                logger.error(f"[Synthesizer] stream_guidance producer failed: {exc}")
             finally:
                 chunk_queue.put(None)
 

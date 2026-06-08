@@ -19,6 +19,7 @@ from .graph.coach_graph import build_coach_graph
 from .graph.state import CoachAgentState
 from .memory.memory_consolidator import MemoryConsolidator
 from .memory.memory_manager import WorkingMemoryManager
+from .memory.memory_policy import should_consolidate
 from .prompts.skill_guide import get_skill_by_node
 from .roles.macroPlanner import MacroPlannerAgent
 from .roles.smallPlanner import SmallPlannerAgent
@@ -50,7 +51,9 @@ class CoachOrchestrator:
         self.graph_tool = GraphTool()
         self.client = client
         self.memory_manager = WorkingMemoryManager(
-            max_history_turns=4, sql_tool=self.sql_tool
+            max_history_turns=4,
+            sql_tool=self.sql_tool,
+            summarize_client=client,
         )
         self.memory_consolidator = MemoryConsolidator(
             self.graph_tool, self.sql_tool, client
@@ -227,7 +230,7 @@ class CoachOrchestrator:
     def _trim_injury_avoidance_graph_data(self, data: list[Any], limit: int) -> list[Any]:
         """
         injury_avoidance 会为每个高风险动作返回完整平替列表，极易撑爆 Synthesizer 上下文。
-        仅保留前 limit 条拦截记录，且每条最多保留 1 个安全平替动作。
+        仅保留前 limit 条拦截记录，且每条最多保留 2 个安全平替动作。
         """
         if not isinstance(data, list):
             return data
@@ -241,7 +244,7 @@ class CoachOrchestrator:
             row_copy = dict(row)
             replacements = row_copy.get("safe_replacements")
             if isinstance(replacements, list):
-                row_copy["safe_replacements"] = replacements[:1]
+                row_copy["safe_replacements"] = replacements[:2]
             trimmed.append(row_copy)
 
         return trimmed
@@ -515,8 +518,17 @@ class CoachOrchestrator:
             full_reply_text = coach_response.model_dump_json()
             memory.add_message(role="user", content=user_input)
             memory.add_message(role="assistant", content=full_reply_text)
+            memory.turn_count += 1
             memory.reset_loop_state()
             await self.memory_manager.save_session_memory(session_id, memory)
+
+            semantic_profile = state.get("semantic_profile")
+            sniff = await self.memory_consolidator.sniff_delta(
+                user_id=user_id,
+                user_query=user_input,
+                semantic_profile=semantic_profile,
+            )
+            run_consolidation = should_consolidate(memory, sniff=sniff)
 
             user_record = ChatRecord(
                 session_id=session_id, role="user", content=user_input
@@ -524,13 +536,13 @@ class CoachOrchestrator:
             coach_record = ChatRecord(
                 session_id=session_id,
                 role="assistant",
-                content=coach_response.detailed_guidance,
+                content=full_reply_text,
             )
             training_log = TrainingLog(
                 user_id=user_id,
                 session_id=session_id,
                 coach_reply_summary=coach_response.summary,
-                generated_plan_json=coach_response.exercises,
+                generated_plan_json=coach_response.exercises or [],
                 is_completed=0,
             )
 
@@ -544,15 +556,72 @@ class CoachOrchestrator:
                     self.sql_tool.save_training_log,
                     trainingLog=training_log,
                 )
-                self._background_tasks.add_task(
-                    self.memory_consolidator.consolidate_session_to_graph,
-                    user_id=user_id,
-                    user_query=user_input,
-                    semantic_profile=state.get("semantic_profile"),
-                )
+                if run_consolidation:
+                    self._background_tasks.add_task(
+                        self.memory_consolidator.consolidate_session_to_graph,
+                        user_id=user_id,
+                        user_query=user_input,
+                        semantic_profile=semantic_profile,
+                        sniff=sniff,
+                    )
                 self._schedule_agent_plan_log(state)
 
         return {"memory": memory}
+
+    async def close_session(
+        self,
+        user_id: int,
+        session_id: str,
+        background_tasks: Any = None,
+    ) -> dict[str, Any]:
+        """Finalize a session: optional warm summary already in Redis; force profile consolidation."""
+        self._background_tasks = background_tasks
+        memory = await self.memory_manager.get_session_memory(session_id)
+        memory.pending_consolidation = True
+
+        last_user_query = ""
+        for msg in reversed(memory.chat_history):
+            if msg.role == "user":
+                last_user_query = msg.content
+                break
+
+        semantic_profile = await self.graph_tool.fetch_user_semantic_memory(user_id)
+        sniff = None
+        if last_user_query:
+            sniff = await self.memory_consolidator.sniff_delta(
+                user_id=user_id,
+                user_query=last_user_query,
+                semantic_profile=semantic_profile,
+            )
+
+        await self.memory_manager.save_session_memory(session_id, memory, summarize=False)
+
+        if should_consolidate(memory, force=True, sniff=sniff):
+            if self._background_tasks:
+                self._background_tasks.add_task(
+                    self.memory_consolidator.consolidate_session_to_graph,
+                    user_id=user_id,
+                    user_query=last_user_query or "session close",
+                    semantic_profile=semantic_profile,
+                    sniff=sniff,
+                )
+            else:
+                await self.memory_consolidator.consolidate_session_to_graph(
+                    user_id=user_id,
+                    user_query=last_user_query or "session close",
+                    semantic_profile=semantic_profile,
+                    sniff=sniff,
+                )
+
+        memory.pending_consolidation = False
+        await self.memory_manager.save_session_memory(session_id, memory, summarize=False)
+
+        return {
+            "session_id": session_id,
+            "turn_count": memory.turn_count,
+            "session_summary_chars": len(memory.session_summary or ""),
+            "consolidation_scheduled": True,
+        }
 
     async def execute_stream(
         self,
@@ -589,7 +658,7 @@ class CoachOrchestrator:
             executed_tasks=executed_tasks,
         ):
             guidance_parts.append(chunk)
-            yield chunk
+            yield {"type": "chunk", "content": chunk}
 
         coach_response = self.synthesizer.build_response_from_guidance(
             guidance_text="".join(guidance_parts),
@@ -597,6 +666,7 @@ class CoachOrchestrator:
             executed_tasks=executed_tasks,
         )
         await self._node_persist({**prep_state, "coach_response": coach_response})
+        yield {"type": "done", "data": coach_response.model_dump()}
 
     async def execute(
         self,
@@ -626,4 +696,5 @@ class CoachOrchestrator:
             f"{LogColor.SYNTH}[Synthesizer] ✨ 完成。{LogColor.RESET}\n"
             f"===================================================================\n"
         )
+        print("coach response:", coach_response);
         return coach_response

@@ -6,6 +6,7 @@ import ExerciseModal from "./ExerciseModal"
 export default function Recommendation({ data }) {
     const [selectedEx, setSelectedEx] = useState("");
     if (!data) return null;
+    console.log("current recommendation data:", data);
 
     // 解构后端 CoachResponse 模型
     const {

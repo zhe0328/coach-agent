@@ -34,6 +34,7 @@ export default function App() {
   }, []);
 
   const handleAuthSuccess = (id, name) => {
+    localStorage.removeItem("current_fitness_session_id");
     setUserId(String(id));
     setUsername(name);
     localStorage.setItem("current_user_id", String(id));

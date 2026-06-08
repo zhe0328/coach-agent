@@ -10,7 +10,19 @@ class WorkingMemory(BaseModel):
     """当前会话的工作记忆完全体模型（绑定 Session 生命周期）"""
     session_id: str
     chat_history: List[ChatMessage] = Field(default_factory=list, description="近期滑窗内的标准对话历史")
-    
+    session_summary: str = Field(
+        "",
+        description="被滑窗裁掉的较早轮次摘要（warm memory）",
+    )
+    turn_count: int = Field(
+        0,
+        description="本会话已完成的 user+assistant 对话轮数",
+    )
+    pending_consolidation: bool = Field(
+        False,
+        description="会话关闭或高信号变更时标记，触发 Neo4j 画像巩固",
+    )
+
     # 💡 核心高级特性：状态机自愈状态留存
     current_loop_retry_count: int = Field(0, description="记录当前轮次中，Planner 已经因质检失败重试了多少次")
     latest_analyzer_feedback: str = Field("", description="留存 Analyzer 在上一轮自愈迭代中吐出的具体反思指令")

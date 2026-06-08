@@ -56,7 +56,7 @@ async def get_current_user(
 def assert_user_matches_token(
     request_user_id: int, token_user: TokenPayload
 ) -> None:
-    if request_user_id != token_user.user_id:
+    if int(request_user_id) != int(token_user.user_id):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="user_id does not match authenticated user",

@@ -102,6 +102,20 @@ class MemoryConsolidator:
                 )
         return sniff
 
+    async def sniff_delta(
+        self,
+        user_id: int,
+        user_query: str,
+        semantic_profile: list[dict[str, Any]] | None = None,
+    ) -> InjurySnifferSchema | None:
+        """Lightweight per-turn profile delta detection (no graph writes)."""
+        if semantic_profile is None:
+            semantic_profile = await self.graph_tool.fetch_user_semantic_memory(
+                user_id
+            )
+        profile = await self._load_profile(user_id, semantic_profile)
+        return await self._sniff_profile_delta(user_query, profile)
+
     async def _sniff_profile_delta(
         self, user_query: str, profile: dict[str, Any]
     ) -> InjurySnifferSchema | None:
@@ -161,6 +175,7 @@ class MemoryConsolidator:
         user_id: int,
         user_query: str,
         semantic_profile: list[dict[str, Any]] | None = None,
+        sniff: InjurySnifferSchema | None = None,
     ):
         """对比已有语义画像，将演进结果双写至 Neo4j 与 MySQL users 表。"""
         profile_changed = False
@@ -172,7 +187,8 @@ class MemoryConsolidator:
                 )
 
             profile = await self._load_profile(user_id, semantic_profile)
-            sniff = await self._sniff_profile_delta(user_query, profile)
+            if sniff is None:
+                sniff = await self._sniff_profile_delta(user_query, profile)
             if not sniff:
                 return
 

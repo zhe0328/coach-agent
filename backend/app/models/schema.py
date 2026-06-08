@@ -67,6 +67,9 @@ class ExerciseFields(BaseModel):
 
 
 class SQLSearchSchema(ExerciseFields):
+    equipment_zh: Optional[str | List[str]] = Field(
+        None, description="器材名称，支持单个或多个"
+    )
     limit: int = Field(default=4, description="返回动作的数量限制")
 
 

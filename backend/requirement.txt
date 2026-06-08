@@ -1,37 +1,40 @@
 # Web framework
-fastapi
-uvicorn[standard]
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
 
 # Database
-mysql-connector-python
-neo4j
-chromadb
-redis
+mysql-connector-python==9.1.0
+neo4j==5.27.0
+chromadb==0.5.23
+redis==5.2.1
 
 # Data validation
-pydantic
-pydantic-settings
+pydantic==2.10.3
+pydantic-settings==2.6.1
 
 # AI / LLM
-openai
-python-dotenv
-langchain
-langchain-openai
-langchain-text-splitters
-dashscope
+openai==1.57.4
+python-dotenv==1.0.1
+langchain==0.3.13
+langchain-openai==0.2.14
+langchain-text-splitters==0.3.4
+langgraph==0.2.60
+dashscope==1.20.14
 
 # Resilience & HTTP
-tenacity
-httpx
+tenacity==9.0.0
+httpx==0.28.1
 
 # Auth
-bcrypt
+bcrypt==4.2.1
+PyJWT==2.10.1
 
 # Evaluation & testing (scripts and test suites)
-pytest
-deepeval
-pandas
-ragas
-langchain-community
-langchain-core
-numpy
+pytest==8.3.4
+pytest-asyncio==0.24.0
+deepeval==2.1.6
+pandas==2.2.3
+ragas==0.2.10
+langchain-community==0.3.13
+langchain-core==0.3.28
+numpy==2.2.1

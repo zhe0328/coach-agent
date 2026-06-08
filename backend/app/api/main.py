@@ -80,14 +80,13 @@ async def chat_endpoint(
     assert_user_matches_token(request.user_id, current_user)
 
     async def generate():
-        async for chunk in orchestrator.execute_stream(
+        async for event in orchestrator.execute_stream(
             request.user_id,
             request.session_id,
             request.message,
             background_tasks,
         ):
-            if chunk:
-                yield f"data: {json.dumps({'content': chunk}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps(event, ensure_ascii=False, default=str)}\n\n"
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream")
@@ -103,6 +102,8 @@ async def chat_static(
     response = await orchestrator.execute(
         request.user_id, request.session_id, request.message, background_tasks
     )
+    if hasattr(response, "model_dump"):
+        return {"data": response.model_dump()}
     return {"data": response}
 
 
@@ -262,6 +263,30 @@ async def get_user_sessions(
         raise
     except Exception as e:
         logger.error(f"API Error fetching user {user_id}: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.post("/v1/chat/sessions/{session_id}/close")
+async def close_chat_session(
+    session_id: str,
+    background_tasks: BackgroundTasks,
+    current_user: TokenPayload = Depends(get_current_user),
+):
+    try:
+        owner_id = await sql_tool.get_session_user_id(session_id)
+        if owner_id is None:
+            raise HTTPException(
+                status_code=404, detail=f"Session {session_id} not found"
+            )
+        assert_user_matches_token(owner_id, current_user)
+
+        return await orchestrator.close_session(
+            owner_id, session_id, background_tasks
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"API Error closing session {session_id}: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
