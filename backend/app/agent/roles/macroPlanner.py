@@ -65,7 +65,18 @@ class MacroPlannerAgent:
         if history_context:
             messages.extend(history_context)
 
-        user_content = f"{semantic_constraints}【当前用户的最新发问】：\n\"{user_input}\"\n"
+        summary_block = ""
+        if memory.session_summary.strip():
+            summary_block = (
+                f"【本对话较早轮次摘要（warm memory）】:\n"
+                f"{memory.session_summary.strip()}\n\n"
+            )
+
+        user_content = (
+            f"{semantic_constraints}"
+            f"{summary_block}"
+            f"【当前用户的最新发问】：\n\"{user_input}\"\n"
+        )
 
         if memory.latest_analyzer_feedback:
             user_content += (

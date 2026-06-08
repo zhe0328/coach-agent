@@ -24,6 +24,8 @@ class UserLoginRequest(BaseModel):
 class AuthResponse(BaseModel):
     user_id: int
     username: str
+    access_token: str = Field(..., description="JWT bearer token for protected APIs")
+    token_type: str = Field("bearer", description="Token type for Authorization header")
     status: str = Field("success", description="鉴权状态标记")
 
 class ChatRequest(BaseModel):
@@ -65,7 +67,10 @@ class ExerciseFields(BaseModel):
 
 
 class SQLSearchSchema(ExerciseFields):
-    limit: int = Field(default=10, description="返回动作的数量限制")
+    equipment_zh: Optional[str | List[str]] = Field(
+        None, description="器材名称，支持单个或多个"
+    )
+    limit: int = Field(default=4, description="返回动作的数量限制")
 
 
 class ExerciseBase(ExerciseFields):
@@ -94,6 +99,7 @@ class ToolCallIntent(BaseModel):
     )
     reason: str = Field(default="", description="选择该工具的原因")
     focused_query: str = Field(..., description="针对该工具剥离噪音后的定向用户提问切片（如：'用哑铃练胸'）")
+    limit: int = Field(default=4, description="返回动作的数量限制")
 
 class MacroPlanSchema(BaseModel):
     routing_mode: Literal["standard", "chat_only"] = Field(

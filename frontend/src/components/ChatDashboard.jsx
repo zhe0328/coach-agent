@@ -35,7 +35,11 @@ function normalizeHistoryRecord(row) {
 
   try {
     const parsed = JSON.parse(row.content);
-    if (parsed && typeof parsed === "object" && parsed.detailed_guidance !== undefined) {
+    if (
+      parsed &&
+      typeof parsed === "object" &&
+      (parsed.response_type !== undefined || parsed.greeting !== undefined)
+    ) {
       return { id: row.id, role, content: parsed };
     }
   } catch {
@@ -112,9 +116,17 @@ export default function ChatDashboard({ userId }) {
     if (sessionsLoading) return;
 
     const storedId = localStorage.getItem("current_fitness_session_id");
-    if (storedId) {
+    const ownedIds = new Set(sessions.map((s) => s.session_id));
+
+    // Only restore a stored session if it belongs to this user (listed in sidebar).
+    // A stale id from another account or eval runs triggers 403 on /v1/chat/history.
+    if (storedId && (sessions.length === 0 || ownedIds.has(storedId))) {
       setCurrentSessionId(storedId);
       return;
+    }
+
+    if (storedId) {
+      localStorage.removeItem("current_fitness_session_id");
     }
 
     if (sessions.length > 0) {
@@ -141,13 +153,30 @@ export default function ChatDashboard({ userId }) {
         } else {
           setMessages([WELCOME]);
         }
-      } catch {
+      } catch (err) {
+        const status = err.response?.status;
+        if (status === 403) {
+          // Session exists in DB but belongs to another user — drop it and try next.
+          localStorage.removeItem("current_fitness_session_id");
+          const forbiddenId = currentSessionId;
+          setSessions((prev) =>
+            prev.filter((s) => s.session_id !== forbiddenId),
+          );
+          const remaining = sessions.filter(
+            (s) => s.session_id !== forbiddenId,
+          );
+          const fallbackId = remaining[0]?.session_id ?? ensureSessionId();
+          if (fallbackId !== forbiddenId) {
+            setCurrentSessionId(fallbackId);
+            return;
+          }
+        }
         setMessages([WELCOME]);
       }
     }
 
     loadHistory();
-  }, [currentSessionId]);
+  }, [currentSessionId, ensureSessionId]);
 
   const handleSessionSelect = (sessionId) => {
     if (sessionId === currentSessionId) return;
@@ -172,6 +201,24 @@ export default function ChatDashboard({ userId }) {
     ]);
   };
 
+  const updateSessionPreview = (sessionId, previewText) => {
+    const preview =
+      previewText.slice(0, 20) + (previewText.length > 20 ? "…" : "");
+    const stamp = new Date().toLocaleString("zh-CN", {
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+    setSessions((prev) => {
+      const existing = prev.filter((s) => s.session_id !== sessionId);
+      return [
+        { session_id: sessionId, last_message: preview, created_at: stamp },
+        ...existing,
+      ];
+    });
+  };
+
   const sendMessage = async (text) => {
     if (!text.trim() || isLoading) return;
 
@@ -191,47 +238,26 @@ export default function ChatDashboard({ userId }) {
         text,
       );
 
-      let payload;
-      try {
-        payload =
-          typeof responseStr === "string" ? JSON.parse(responseStr) : responseStr;
-      } catch {
+      const data =
+        typeof responseStr === "string" ? JSON.parse(responseStr) : responseStr;
+      if (!data || typeof data !== "object") {
         throw new Error("后端返回的 CoachResponse 结构体破损");
       }
 
-      const data = payload?.data ?? payload;
+      setMessages((prev) => [
+        ...prev,
+        { id: Date.now() + 1, role: "coach", content: data },
+      ]);
 
-      const coachMsg = {
-        id: Date.now() + 1,
-        role: "coach",
-        content: data,
-      };
-
-      setMessages((prev) => [...prev, coachMsg]);
-
-      setSessions((prev) => {
-        const preview = text.slice(0, 20) + (text.length > 20 ? "…" : "");
-        const stamp = new Date().toLocaleString("zh-CN", {
-          month: "2-digit",
-          day: "2-digit",
-          hour: "2-digit",
-          minute: "2-digit",
-        });
-        const existing = prev.filter((s) => s.session_id !== sessionId);
-        return [
-          { session_id: sessionId, last_message: preview, created_at: stamp },
-          ...existing,
-        ];
-      });
+      updateSessionPreview(
+        sessionId,
+        data.summary || data.detailed_guidance || text,
+      );
     } catch (error) {
       console.error("Chat Error:", error);
       setMessages((prev) => [
         ...prev,
-        {
-          id: Date.now() + 1,
-          role: "coach",
-          content: ERROR_RESPONSE,
-        },
+        { id: Date.now() + 1, role: "coach", content: ERROR_RESPONSE },
       ]);
     } finally {
       setIsLoading(false);

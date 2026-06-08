@@ -16,8 +16,9 @@ class Settings(BaseSettings):
     DEEPSEEK_API_KEY: str
     DEEPSEEK_BASE_URL: Optional[str] = "https://api.deepseek.com"
 
-    QDRANT_API_KEY: str
-    QDRANT_BASE_URL: Optional[str] = "https://xyz-example.eu-central.aws.cloud.qdrant.io"
+    # Legacy — Chroma is used at runtime; keep optional for old .env files
+    QDRANT_API_KEY: Optional[str] = None
+    QDRANT_BASE_URL: Optional[str] = None
 
     NEO4J_BASE_URL: Optional[str] = "neo4j+ssc://xxx.databases.neo4j.io"
     NEO4J_USERNAME: str
@@ -28,7 +29,11 @@ class Settings(BaseSettings):
     DASHSCOPE_API_KEY: str
 
     REDIS_URL: str
-    
+
+    # Auth (JWT for chat / protected APIs)
+    AUTH_SECRET_KEY: str
+    AUTH_TOKEN_EXPIRE_HOURS: int = 24
+
     # 系统配置
     DEBUG: bool = False
 

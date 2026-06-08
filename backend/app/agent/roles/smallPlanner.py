@@ -57,7 +57,10 @@ class SmallPlannerAgent:
             请结合上游规划官的决策依据（它告诉你了为什么要查SQL），将用户的原始输入精炼为高价值的检索词，并判定意图：
         """
         try:
-            print("focused query: ", focused_query)
+            logger.info(
+                f"{LogColor.TOOL}[SmallPlanner][sql_tool] 提取输入 "
+                f"focused_query={focused_query!r} reason={reason!r}{LogColor.RESET}"
+            )
             response = self.client.beta.chat.completions.parse(
                 model=self.model,  # 涉及复杂规划，建议用强模型
                 messages=[
@@ -67,7 +70,12 @@ class SmallPlannerAgent:
                 response_format=SQLSearchSchema,
                 temperature=0.0,
             )
-            return response.choices[0].message.parsed
+            parsed = response.choices[0].message.parsed
+            logger.info(
+                f"{LogColor.TOOL}[SmallPlanner][sql_tool] 提取结果 "
+                f"{parsed.model_dump(exclude_none=True)}{LogColor.RESET}"
+            )
+            return parsed
         except Exception as e:
             logger.error(f"[Extractor] SQL参数提取失败: {e}")
             return SQLSearchSchema()  # 容灾：返回全 null 对象
@@ -95,7 +103,10 @@ class SmallPlannerAgent:
             请结合上游规划官的决策依据（它告诉你了为什么要查graph），将用户的原始输入精炼为高价值的检索词，并判定意图：
         """
         try:
-            print("focused query: ", focused_query)
+            logger.info(
+                f"{LogColor.TOOL}[SmallPlanner][graph_tool] 提取输入 "
+                f"focused_query={focused_query!r} reason={reason!r}{LogColor.RESET}"
+            )
             response = self.client.beta.chat.completions.parse(
                 model=self.model,
                 messages=[
@@ -105,7 +116,12 @@ class SmallPlannerAgent:
                 response_format=GraphReasoningSchema,
                 temperature=0.0,
             )
-            return response.choices[0].message.parsed
+            parsed = response.choices[0].message.parsed
+            logger.info(
+                f"{LogColor.TOOL}[SmallPlanner][graph_tool] 提取结果 "
+                f"{parsed.model_dump(exclude_none=True)}{LogColor.RESET}"
+            )
+            return parsed
         except Exception as e:
             logger.error(f"[Extractor] Graph参数提取失败: {e}")
             raise e
@@ -133,7 +149,10 @@ class SmallPlannerAgent:
             请结合上游规划官的决策依据（它告诉你了为什么要查RAG），将用户的原始输入精炼为高价值的检索词，并判定意图：
         """
         try:
-            print("focused query: ", focused_query)
+            logger.info(
+                f"{LogColor.TOOL}[SmallPlanner][rag_tool] 提取输入 "
+                f"focused_query={focused_query!r} reason={reason!r}{LogColor.RESET}"
+            )
             response = self.client.beta.chat.completions.parse(
                 model=self.model,
                 messages=[
@@ -143,7 +162,12 @@ class SmallPlannerAgent:
                 response_format=RAGSearchSchema,
                 temperature=0.0,
             )
-            return response.choices[0].message.parsed
+            parsed = response.choices[0].message.parsed
+            logger.info(
+                f"{LogColor.TOOL}[SmallPlanner][rag_tool] 提取结果 "
+                f"{parsed.model_dump(exclude_none=True)}{LogColor.RESET}"
+            )
+            return parsed
         except Exception as e:
             logger.error(f"[Extractor] RAG参数提取失败: {e}")
             raise e
@@ -166,7 +190,13 @@ class SmallPlannerAgent:
             t_id = intent.task_id
             t_reason = intent.reason
             t_focused_query = intent.focused_query
-            
+
+            logger.info(
+                f"{LogColor.TOOL}[SmallPlanner] 📋 宏观任务 [{t_id}] tool={intent.tool_name} "
+                f"depends_on={intent.depends_on} focused_query={t_focused_query!r} "
+                f"reason={t_reason!r}{LogColor.RESET}"
+            )
+
             if intent.tool_name == "sql_tool":
                 extract_tasks[t_id] = self._extract_sql_params(
                     t_focused_query, t_reason
@@ -230,6 +260,18 @@ class SmallPlannerAgent:
 
                 elif intent.tool_name == "rag_tool":
                     task_node.rag_params = param_obj
+
+            task_params = (
+                task_node.sql_params
+                or task_node.graph_params
+                or task_node.rag_params
+            )
+            logger.info(
+                f"{LogColor.TOOL}[SmallPlanner] 📦 装配完成 [{task_node.task_id}] "
+                f"tool={task_node.tool} depends_on={task_node.depends_on} "
+                f"params={task_params.model_dump(exclude_none=True) if task_params else None}"
+                f"{LogColor.RESET}"
+            )
 
             final_tasks.append(task_node)
 

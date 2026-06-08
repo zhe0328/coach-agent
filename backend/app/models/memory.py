@@ -10,7 +10,19 @@ class WorkingMemory(BaseModel):
     """当前会话的工作记忆完全体模型（绑定 Session 生命周期）"""
     session_id: str
     chat_history: List[ChatMessage] = Field(default_factory=list, description="近期滑窗内的标准对话历史")
-    
+    session_summary: str = Field(
+        "",
+        description="被滑窗裁掉的较早轮次摘要（warm memory）",
+    )
+    turn_count: int = Field(
+        0,
+        description="本会话已完成的 user+assistant 对话轮数",
+    )
+    pending_consolidation: bool = Field(
+        False,
+        description="会话关闭或高信号变更时标记，触发 Neo4j 画像巩固",
+    )
+
     # 💡 核心高级特性：状态机自愈状态留存
     current_loop_retry_count: int = Field(0, description="记录当前轮次中，Planner 已经因质检失败重试了多少次")
     latest_analyzer_feedback: str = Field("", description="留存 Analyzer 在上一轮自愈迭代中吐出的具体反思指令")
@@ -50,6 +62,36 @@ class InjurySnifferSchema(BaseModel):
         description="简短摘录或分析用户对话中透露出伤病的客观依据（如：用户主诉深蹲时膝盖有弹响）。"
     )
 
-    has_new_equipment: bool = Field(..., description="用户是否提到了自己【新买了解锁、或者可以用】的新器材。")
-    equipment_name: Optional[List[str]] = Field(None, )
+    has_new_equipment: bool = Field(
+        ..., description="用户是否提到了自己【新买了解锁、或者可以用】的新器材。"
+    )
+    equipment_name: Optional[List[str]] = Field(None)
+
+    has_injury_resolution: bool = Field(
+        False,
+        description="用户明确表示档案中的伤病/不适已恢复、痊愈或不再构成训练限制。",
+    )
+    resolved_joints: Optional[List[JOINT_LITERAL]] = Field(
+        None,
+        description="已从不适中恢复的关节。仅当 has_injury_resolution 为 true 时填写。",
+    )
+
+    has_equipment_removal: bool = Field(
+        False,
+        description="用户明确表示不再拥有、无法使用或不再使用某些器材。",
+    )
+    removed_equipment: Optional[List[str]] = Field(None)
+
+    conflicts_with_stored_profile: bool = Field(
+        False,
+        description="本轮原话是否与已存储的伤病/器械画像存在明显矛盾。",
+    )
+    conflict_resolution: Literal["trust_current_input", "keep_stored_profile", "none"] = Field(
+        "none",
+        description="出现矛盾时的裁决：优先采信本轮原话 / 保留档案 / 无矛盾。",
+    )
+    conflict_reason: str = Field(
+        "",
+        description="若存在矛盾，简述矛盾点与裁决依据。",
+    )
     

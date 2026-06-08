@@ -1,8 +1,9 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Login from "./components/Login";
 import Signup from "./components/Signup";
 import Profile from "./components/Profile";
 import ChatDashboard from "./components/ChatDashboard";
+import { clearAuthSession, setUnauthorizedHandler } from "./api/authSession";
 import "./App.css";
 
 export default function App() {
@@ -15,7 +16,25 @@ export default function App() {
   const [authMode, setAuthMode] = useState("login");
   const [showProfile, setShowProfile] = useState(false);
 
+  useEffect(() => {
+    setUnauthorizedHandler(() => {
+      setUserId(null);
+      setUsername(null);
+      setAuthMode("login");
+      setShowProfile(false);
+    });
+
+    const storedUserId = localStorage.getItem("current_user_id");
+    const token = localStorage.getItem("access_token");
+    if (storedUserId && !token) {
+      clearAuthSession();
+      setUserId(null);
+      setUsername(null);
+    }
+  }, []);
+
   const handleAuthSuccess = (id, name) => {
+    localStorage.removeItem("current_fitness_session_id");
     setUserId(String(id));
     setUsername(name);
     localStorage.setItem("current_user_id", String(id));
@@ -23,12 +42,11 @@ export default function App() {
   };
 
   const handleLogout = () => {
-    localStorage.removeItem("current_user_id");
-    localStorage.removeItem("current_username");
-    localStorage.removeItem("current_fitness_session_id");
+    clearAuthSession();
     setUserId(null);
     setUsername(null);
     setAuthMode("login");
+    setShowProfile(false);
   };
 
   return (

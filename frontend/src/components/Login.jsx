@@ -21,6 +21,7 @@ export default function Login({ onAuthSuccess, onToggleMode }) {
                 if (data.status === "success") {
                     localStorage.setItem("current_user_id", data.user_id);
                     localStorage.setItem("current_username", data.username);
+                    localStorage.setItem("access_token", data.access_token);
                     onAuthSuccess(data.user_id, data.username);
                 }
             })
