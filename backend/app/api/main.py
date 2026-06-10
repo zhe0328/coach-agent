@@ -1,9 +1,8 @@
-from fastapi import Depends, FastAPI, HTTPException, BackgroundTasks
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from ..tools.sql_tool import SQLTool
-from ..tools.graph_tool import GraphTool
 from ..config import get_settings
 from ..agent.orchestrator import CoachOrchestrator
 from ..models.schema import (
@@ -15,6 +14,7 @@ from ..models.schema import (
     UserLoginRequest,
 )
 from ..agent.utils.logger import logger, LogColor
+from ..queue.enqueue import enqueue_user_semantic_init
 from .auth import (
     TokenPayload,
     assert_user_matches_token,
@@ -37,8 +37,6 @@ client = OpenAI(
 orchestrator = CoachOrchestrator(client)
 
 sql_tool = SQLTool()
-
-graph_tool = GraphTool()
 
 app.add_middleware(
     CORSMiddleware,
@@ -73,7 +71,6 @@ async def get_exercise(exercise_id: str):
 @app.post("/v1/chat")
 async def chat_endpoint(
     request: ChatRequest,
-    background_tasks: BackgroundTasks,
     current_user: TokenPayload = Depends(get_current_user),
 ):
     """SSE streaming chat — runs pipeline through analyzer, streams synthesizer output."""
@@ -84,7 +81,6 @@ async def chat_endpoint(
             request.user_id,
             request.session_id,
             request.message,
-            background_tasks,
         ):
             yield f"data: {json.dumps(event, ensure_ascii=False, default=str)}\n\n"
         yield "data: [DONE]\n\n"
@@ -95,12 +91,11 @@ async def chat_endpoint(
 @app.post("/v1/chat/static")
 async def chat_static(
     request: ChatRequest,
-    background_tasks: BackgroundTasks,
     current_user: TokenPayload = Depends(get_current_user),
 ):
     assert_user_matches_token(request.user_id, current_user)
     response = await orchestrator.execute(
-        request.user_id, request.session_id, request.message, background_tasks
+        request.user_id, request.session_id, request.message
     )
     if hasattr(response, "model_dump"):
         return {"data": response.model_dump()}
@@ -108,9 +103,7 @@ async def chat_static(
 
 
 @app.post("/v1/user/signup", response_model=AuthResponse)
-async def sign_up_user(
-    request: UserSignupRequest, background_tasks: BackgroundTasks
-):
+async def sign_up_user(request: UserSignupRequest):
     try:
         logger.info(
             f"{LogColor.TOOL}[AuthAPI] 👤 接收到新用户注册与身体问卷初始化请求，用户名: '{request.username}'{LogColor.RESET}"
@@ -128,15 +121,13 @@ async def sign_up_user(
             else ["自重"]
         )
 
-        if background_tasks:
-            background_tasks.add_task(
-                graph_tool.init_user_semantic_memory,
-                user_id=new_user_id,
-                name=request.username,
-                level=request.fitness_level,
-                injuries=injuries_list,
-                equipments=equipments_list,
-            )
+        enqueue_user_semantic_init(
+            user_id=new_user_id,
+            name=request.username,
+            level=request.fitness_level,
+            injuries=injuries_list,
+            equipments=equipments_list,
+        )
 
         token = create_access_token(new_user_id, request.username)
         return AuthResponse(
@@ -189,7 +180,6 @@ async def login(request: UserLoginRequest):
 @app.post("/v1/user/profile/update")
 async def update_profile(
     request: UserProfileRequest,
-    background_tasks: BackgroundTasks,
     current_user: TokenPayload = Depends(get_current_user),
 ):
     if request.user_id is not None:
@@ -213,15 +203,13 @@ async def update_profile(
             else ["自重"]
         )
 
-        if background_tasks:
-            background_tasks.add_task(
-                graph_tool.init_user_semantic_memory,
-                user_id=request.user_id,
-                name=request.username,
-                level=request.fitness_level,
-                injuries=injuries_list,
-                equipments=equipments_list,
-            )
+        enqueue_user_semantic_init(
+            user_id=request.user_id,
+            name=request.username,
+            level=request.fitness_level,
+            injuries=injuries_list,
+            equipments=equipments_list,
+        )
 
         return {"status": "success", "message": "长效语义画像与生理防线升级完毕"}
 
@@ -269,7 +257,6 @@ async def get_user_sessions(
 @app.post("/v1/chat/sessions/{session_id}/close")
 async def close_chat_session(
     session_id: str,
-    background_tasks: BackgroundTasks,
     current_user: TokenPayload = Depends(get_current_user),
 ):
     try:
@@ -280,9 +267,7 @@ async def close_chat_session(
             )
         assert_user_matches_token(owner_id, current_user)
 
-        return await orchestrator.close_session(
-            owner_id, session_id, background_tasks
-        )
+        return await orchestrator.close_session(owner_id, session_id)
     except HTTPException:
         raise
     except Exception as e:

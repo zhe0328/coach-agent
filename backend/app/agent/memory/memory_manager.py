@@ -172,8 +172,8 @@ class WorkingMemoryManager:
         *,
         summarize: bool = True,
         summarize_fn: SummarizeFn | None = None,
-    ) -> None:
-        """滑窗裁剪（可选摘要）后写入 Redis，并刷新 TTL。"""
+    ) -> list[ChatMessage]:
+        """滑窗裁剪（可选摘要）后写入 Redis，并刷新 TTL。返回被裁剪的消息。"""
         redis_key = self._redis_key(session_id)
         pruned = self.prune_excess_messages(memory)
         await self._summarize_and_merge(
@@ -194,6 +194,7 @@ class WorkingMemoryManager:
             logger.error(
                 f"[WorkingMemory] 写入 Redis 会话 [{session_id}] 失败: {e}"
             )
+        return pruned
 
     async def delete_session_memory(self, session_id: str) -> None:
         try:

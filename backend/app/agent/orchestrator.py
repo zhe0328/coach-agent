@@ -35,6 +35,12 @@ from ..models.schema import (
     ToolCallIntent,
     ToolTask,
 )
+from ..queue.enqueue import (
+    AfterTurnPayload,
+    enqueue_after_turn,
+    enqueue_agent_plans_log,
+    enqueue_consolidation,
+)
 from ..tools.graph_tool import GraphTool
 from ..tools.rag_tool import RAGTool
 from ..tools.sql_tool import SQLTool
@@ -62,7 +68,6 @@ class CoachOrchestrator:
         self._prep_graph = build_coach_graph(
             self, interrupt_before=["synthesizer"]
         )
-        self._background_tasks = None
 
     @retry(
         stop=stop_after_attempt(3),
@@ -354,15 +359,12 @@ class CoachOrchestrator:
         )
 
     def _schedule_agent_plan_log(self, state: CoachAgentState) -> None:
-        if not self._background_tasks:
-            return
         agent_plans_log = self._build_agent_plans_log(state)
         if agent_plans_log is None:
             return
-        self._background_tasks.add_task(
-            self.sql_tool.log_agent_plan_decision,
-            agentPlansLog=agent_plans_log,
-        )
+        memory = state["memory"]
+        turn_id = memory.turn_count + 1
+        enqueue_agent_plans_log(agent_plans_log, turn_id=turn_id)
 
     # ── LangGraph nodes ─────────────────────────────────────────────
 
@@ -520,7 +522,9 @@ class CoachOrchestrator:
             memory.add_message(role="assistant", content=full_reply_text)
             memory.turn_count += 1
             memory.reset_loop_state()
-            await self.memory_manager.save_session_memory(session_id, memory)
+            pruned = await self.memory_manager.save_session_memory(
+                session_id, memory, summarize=False
+            )
 
             semantic_profile = state.get("semantic_profile")
             sniff = await self.memory_consolidator.sniff_delta(
@@ -546,25 +550,25 @@ class CoachOrchestrator:
                 is_completed=0,
             )
 
-            if self._background_tasks:
-                self._background_tasks.add_task(
-                    self.sql_tool.log_chat_transaction,
-                    userChatRecord=user_record,
-                    coachChatRecord=coach_record,
+            agent_plans_log = self._build_agent_plans_log(state)
+            turn_range = f"turn_{memory.turn_count}" if pruned else None
+            enqueue_after_turn(
+                AfterTurnPayload(
+                    session_id=session_id,
+                    turn_id=memory.turn_count,
+                    user_id=user_id,
+                    user_record=user_record,
+                    coach_record=coach_record,
+                    training_log=training_log,
+                    run_consolidation=run_consolidation,
+                    user_query=user_input,
+                    semantic_profile=semantic_profile,
+                    sniff=sniff,
+                    agent_plans_log=agent_plans_log,
+                    pruned_messages=pruned or None,
+                    turn_range=turn_range,
                 )
-                self._background_tasks.add_task(
-                    self.sql_tool.save_training_log,
-                    trainingLog=training_log,
-                )
-                if run_consolidation:
-                    self._background_tasks.add_task(
-                        self.memory_consolidator.consolidate_session_to_graph,
-                        user_id=user_id,
-                        user_query=user_input,
-                        semantic_profile=semantic_profile,
-                        sniff=sniff,
-                    )
-                self._schedule_agent_plan_log(state)
+            )
 
         return {"memory": memory}
 
@@ -572,10 +576,8 @@ class CoachOrchestrator:
         self,
         user_id: int,
         session_id: str,
-        background_tasks: Any = None,
     ) -> dict[str, Any]:
         """Finalize a session: optional warm summary already in Redis; force profile consolidation."""
-        self._background_tasks = background_tasks
         memory = await self.memory_manager.get_session_memory(session_id)
         memory.pending_consolidation = True
 
@@ -596,22 +598,16 @@ class CoachOrchestrator:
 
         await self.memory_manager.save_session_memory(session_id, memory, summarize=False)
 
+        consolidation_scheduled = False
         if should_consolidate(memory, force=True, sniff=sniff):
-            if self._background_tasks:
-                self._background_tasks.add_task(
-                    self.memory_consolidator.consolidate_session_to_graph,
-                    user_id=user_id,
-                    user_query=last_user_query or "session close",
-                    semantic_profile=semantic_profile,
-                    sniff=sniff,
-                )
-            else:
-                await self.memory_consolidator.consolidate_session_to_graph(
-                    user_id=user_id,
-                    user_query=last_user_query or "session close",
-                    semantic_profile=semantic_profile,
-                    sniff=sniff,
-                )
+            enqueue_consolidation(
+                user_id=user_id,
+                session_id=session_id,
+                user_query=last_user_query or "session close",
+                semantic_profile=semantic_profile,
+                sniff=sniff,
+            )
+            consolidation_scheduled = True
 
         memory.pending_consolidation = False
         await self.memory_manager.save_session_memory(session_id, memory, summarize=False)
@@ -620,7 +616,7 @@ class CoachOrchestrator:
             "session_id": session_id,
             "turn_count": memory.turn_count,
             "session_summary_chars": len(memory.session_summary or ""),
-            "consolidation_scheduled": True,
+            "consolidation_scheduled": consolidation_scheduled,
         }
 
     async def execute_stream(
@@ -628,10 +624,8 @@ class CoachOrchestrator:
         user_id: int,
         session_id: str,
         user_input: str,
-        background_tasks: Any = None,
     ):
         """Run planner/tools/analyzer, stream synthesizer tokens, then persist."""
-        self._background_tasks = background_tasks
 
         initial_state: CoachAgentState = {
             "user_id": user_id,
@@ -673,14 +667,11 @@ class CoachOrchestrator:
         user_id: int,
         session_id: str,
         user_input: str,
-        background_tasks: Any = None,
     ):
         logger.info(
             f"\n==================== 🤖 NEW COACH AGENT REQUEST ===================="
         )
         logger.info(f"用户输入: '{user_input}'")
-
-        self._background_tasks = background_tasks
 
         initial_state: CoachAgentState = {
             "user_id": user_id,

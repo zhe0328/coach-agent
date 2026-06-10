@@ -7,6 +7,7 @@ mysql-connector-python==9.1.0
 neo4j==5.27.0
 chromadb==0.5.23
 redis==5.2.1
+rq==2.1.0
 
 # Data validation
 pydantic==2.10.3
