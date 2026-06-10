@@ -12,23 +12,23 @@ Coach Agent is a full-stack application:
 The agent retrieves exercises from MySQL, searches fitness knowledge via ChromaDB vector search, and runs injury-aware reasoning over a Neo4j exercise graph — then synthesizes structured coaching responses with exercise recommendations and safety guidance.
 
 ## UI
-<img width="1435" height="735" alt="截屏2026-05-28 16 45 25" src="https://github.com/user-attachments/assets/f45b53fb-8ec8-41e6-b9b2-361825f15bc4" />
 
 
-https://github.com/user-attachments/assets/04fcc5b3-293a-4cd3-ae49-82e29b0d4887
 
-
+[https://github.com/user-attachments/assets/04fcc5b3-293a-4cd3-ae49-82e29b0d4887](https://github.com/user-attachments/assets/04fcc5b3-293a-4cd3-ae49-82e29b0d4887)
 
 ## Why It's Useful
 
-| Feature | Benefit |
-|---------|---------|
-| **Multi-tool agent** | Combines structured queries (SQL), semantic search (RAG), and relationship reasoning (Neo4j) in one workflow |
-| **Injury-aware recommendations** | Graph tool filters or substitutes exercises based on joint load and user injury profile |
-| **Personalized coaching** | User profiles (level, goals, equipment, injuries) persist in MySQL and Neo4j semantic memory |
-| **Session memory** | Redis-backed working memory keeps multi-turn conversations coherent |
-| **Streaming responses** | SSE endpoint reduces time-to-first-token for a smoother chat experience |
-| **Quality evaluation** | DeepEval and pytest suites for agent trajectory and RAG retrieval quality |
+
+| Feature                          | Benefit                                                                                                      |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| **Multi-tool agent**             | Combines structured queries (SQL), semantic search (RAG), and relationship reasoning (Neo4j) in one workflow |
+| **Injury-aware recommendations** | Graph tool filters or substitutes exercises based on joint load and user injury profile                      |
+| **Personalized coaching**        | User profiles (level, goals, equipment, injuries) persist in MySQL and Neo4j semantic memory                 |
+| **Session memory**               | Redis-backed working memory keeps multi-turn conversations coherent                                          |
+| **Streaming responses**          | SSE endpoint reduces time-to-first-token for a smoother chat experience                                      |
+| **Quality evaluation**           | DeepEval and pytest suites for agent trajectory and RAG retrieval quality                                    |
+
 
 ## Architecture
 
@@ -68,6 +68,8 @@ flowchart LR
     ORCH --> REDIS
 ```
 
+
+
 **Agent flow (simplified):**
 
 1. Load user semantic profile from Neo4j and session working memory from Redis.
@@ -87,6 +89,9 @@ coach-agent/
 │   │   ├── api/            # FastAPI routes
 │   │   ├── database/       # MySQL, Neo4j, ChromaDB clients
 │   │   ├── eval/           # Offline eval harness (RAG + agent suites)
+│   │   │   ├── harness.py
+│   │   │   ├── metrics/    # Shared DeepEval metric definitions
+│   │   │   └── reporters/  # CSV report writers
 │   │   ├── models/         # Pydantic schemas
 │   │   └── tools/          # sql_tool, rag_tool, graph_tool
 │   ├── data/
@@ -216,15 +221,17 @@ curl -X POST http://localhost:8000/v1/user/signup \
 
 ## API Overview
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/v1/chat` | Streaming coach response (SSE) |
-| `POST` | `/v1/chat/static` | Full coach response (JSON) |
-| `GET`  | `/v1/exercises/{id}` | Exercise detail by ID |
-| `POST` | `/v1/user/signup` | Register and initialize profile |
-| `POST` | `/v1/user/login` | Authenticate user |
-| `GET`  | `/v1/user/profile/{id}` | Fetch user profile |
+
+| Method | Endpoint                  | Description                             |
+| ------ | ------------------------- | --------------------------------------- |
+| `POST` | `/v1/chat`                | Streaming coach response (SSE)          |
+| `POST` | `/v1/chat/static`         | Full coach response (JSON)              |
+| `GET`  | `/v1/exercises/{id}`      | Exercise detail by ID                   |
+| `POST` | `/v1/user/signup`         | Register and initialize profile         |
+| `POST` | `/v1/user/login`          | Authenticate user                       |
+| `GET`  | `/v1/user/profile/{id}`   | Fetch user profile                      |
 | `POST` | `/v1/user/profile/update` | Update profile and sync semantic memory |
+
 
 For request/response schemas, see the interactive docs at `/docs` or `backend/app/models/schema.py`.
 
@@ -260,10 +267,14 @@ python -m app.eval.harness --suite rag \
   --output-dir tests/results
 ```
 
-| Suite | What it tests | Report |
-|-------|----------------|--------|
-| `rag` | `RAGTool.search_knowledge` vs golden references | `tests/results/rag_eval_latest.csv` |
-| `agent` | Full `CoachOrchestrator` path vs golden set | `tests/results/coach_agent_report_new.csv` |
+
+| Suite   | What it tests                                   | Report                                     |
+| ------- | ----------------------------------------------- | ------------------------------------------ |
+| `rag`   | `RAGTool.search_knowledge` vs golden references | `tests/results/rag_eval_latest.csv`        |
+| `agent` | Full `CoachOrchestrator` path vs golden set     | `tests/results/coach_agent_report_new.csv` |
+
+
+Agent metrics (trajectory, faithfulness, safety, relevancy) live in `app/eval/metrics/agent_metrics.py`. The harness runs agent eval directly; pytest delegates to the same code.
 
 Requires API keys in `.env` (OpenAI-compatible LLM). RAG suite also needs ChromaDB data loaded.
 

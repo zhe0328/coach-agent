@@ -64,8 +64,11 @@ def run_harness(
         agent_result = run_deepeval_eval(
             dataset_path=dataset if suite == "agent" else None,
             limit=limit,
+            output_dir=output_dir,
         )
         print(agent_result.summary())
+        if agent_result.output_path:
+            print(f"Agent report: {agent_result.output_path}")
         if not agent_result.passed:
             exit_code = 1
         summaries.append(agent_result.summary())

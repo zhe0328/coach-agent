@@ -82,3 +82,35 @@ class TestHarnessDryRun:
         assert exit_code == 0
         assert calls["limit"] == 2
         assert calls["output_dir"] == str(tmp_path)
+
+    def test_agent_suite_with_limit_calls_runner(self, monkeypatch, tmp_path: Path):
+        calls: dict = {}
+
+        class FakeAgentResult:
+            case_count = 2
+            passed_count = 2
+            mean_trajectory = 0.9
+            mean_faithfulness = 0.9
+            mean_safety = 0.9
+            mean_relevancy = 0.9
+            dataset_path = tmp_path / "agent.json"
+            output_path = tmp_path / "coach_agent_report_new.csv"
+            limit = 2
+            passed = True
+
+            def summary(self):
+                return "agent ok"
+
+        def fake_run_deepeval_eval(**kwargs):
+            calls.update(kwargs)
+            return FakeAgentResult()
+
+        monkeypatch.setattr("app.eval.harness.run_deepeval_eval", fake_run_deepeval_eval)
+        exit_code = run_harness(
+            suite="agent",
+            limit=2,
+            output_dir=str(tmp_path),
+        )
+        assert exit_code == 0
+        assert calls["limit"] == 2
+        assert calls["output_dir"] == str(tmp_path)
