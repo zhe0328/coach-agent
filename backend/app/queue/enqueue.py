@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
 from typing import Any
 
@@ -50,6 +52,27 @@ def _enqueue(
             return job_id
         logger.error(f"[Queue] failed to enqueue {job_id}: {exc}")
         raise
+
+
+def _semantic_profile_job_id(
+    user_id: int,
+    name: str,
+    level: str,
+    injuries: list[str],
+    equipments: list[str],
+) -> str:
+    fingerprint = json.dumps(
+        {
+            "name": name,
+            "level": level,
+            "injuries": sorted(injuries),
+            "equipments": sorted(equipments),
+        },
+        sort_keys=True,
+        ensure_ascii=False,
+    )
+    digest = hashlib.sha256(fingerprint.encode()).hexdigest()[:16]
+    return f"{user_id}__semantic_init__{digest}"
 
 
 @dataclass(frozen=True)
@@ -186,4 +209,29 @@ def enqueue_consolidation(
             "sniff": sniff_payload,
         },
         retry=Retry(max=2, interval=[30, 120]),
+    )
+
+
+def enqueue_user_semantic_init(
+    *,
+    user_id: int,
+    name: str,
+    level: str,
+    injuries: list[str],
+    equipments: list[str],
+) -> str | None:
+    """Enqueue Neo4j semantic profile initialization after signup or profile update."""
+    job_id = _semantic_profile_job_id(user_id, name, level, injuries, equipments)
+    return _enqueue(
+        QUEUE_MEDIUM,
+        jobs.init_user_semantic_memory,
+        job_id=job_id,
+        kwargs={
+            "user_id": user_id,
+            "name": name,
+            "level": level,
+            "injuries": injuries,
+            "equipments": equipments,
+        },
+        retry=Retry(max=3, interval=[15, 45, 90]),
     )

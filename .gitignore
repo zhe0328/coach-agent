@@ -3,8 +3,15 @@ venv/
 .env
 .mcp.json
 .claude
+.cursor
 data/coach_agent_db_zh.json
 
 **/__pycache__/
 *.py[cod]
 *$py.class
+backend/.deepeval
+backend/data
+backend/tests/dataset/
+backend/tests/results/
+backend/tests/result/
+backend/logs

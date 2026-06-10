@@ -541,7 +541,7 @@ class SQLTool:
                     FROM chat_records as cr
                             JOIN chat_sessions cs on cs.session_id = cr.session_id
                     WHERE cs.user_id = %s
-                    ORDER BY cr.id DESC"""
+                    ORDER BY cs.created_at DESC, cr.id ASC"""
 
         def _query():
             with self.db_manager.get_connection() as conn:

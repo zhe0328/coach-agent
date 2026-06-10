@@ -130,3 +130,22 @@ def memory_summarize(
         f"[Queue] memory_summarize merged warm summary for {session_id} "
         f"(turn_range={turn_range}, chunk={len(chunk)} chars)"
     )
+
+
+def init_user_semantic_memory(
+    user_id: int,
+    name: str,
+    level: str,
+    injuries: list[str],
+    equipments: list[str],
+) -> None:
+    graph_tool = _get_services()["graph_tool"]
+    asyncio.run(
+        graph_tool.init_user_semantic_memory(
+            user_id=user_id,
+            name=name,
+            level=level,
+            injuries=injuries,
+            equipments=equipments,
+        )
+    )
