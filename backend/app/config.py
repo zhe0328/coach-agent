@@ -30,6 +30,9 @@ class Settings(BaseSettings):
 
     REDIS_URL: str
 
+    # Background job queue (Redis + RQ)
+    QUEUE_ENABLED: bool = True
+
     # Auth (JWT for chat / protected APIs)
     AUTH_SECRET_KEY: str
     AUTH_TOKEN_EXPIRE_HOURS: int = 24
