@@ -8,6 +8,7 @@ from deepeval.evaluate import AsyncConfig
 from deepeval.test_case import LLMTestCase, ToolCall, LLMTestCaseParams
 from app.config import settings
 from app.agent.orchestrator import CoachOrchestrator
+from app.eval.paths import DEFAULT_AGENT_DATASET
 from openai import OpenAI
 import deepeval
 import random
@@ -30,12 +31,18 @@ coach_orchestrator = CoachOrchestrator(client)
 GLOBAL_TEST_RECORDS = []
 
 def load_custom_dataset():
-    dataset_path = "/Users/eva/Documents/git/coach-agent/backend/tests/dataset/coach_agent_advanced_goldens_35.json"
-    
+    dataset_path = os.environ.get(
+        "COACH_EVAL_AGENT_DATASET", str(DEFAULT_AGENT_DATASET)
+    )
+    limit_raw = os.environ.get("COACH_EVAL_LIMIT")
+    limit = int(limit_raw) if limit_raw else None
+
     if not os.path.exists(dataset_path):
         pytest.fail(f"找不到数据集文件：{dataset_path}，请先运行生成脚本！")
     with open(dataset_path, "r", encoding="utf-8") as f:
         data = json.load(f)
+    if limit is not None:
+        data = data[:limit]
     return data
 
 @pytest.mark.parametrize("test_data", load_custom_dataset())
@@ -163,5 +170,5 @@ def after_test_run():
         print("df: ", df)
         output_dir = "tests/results"
         os.makedirs(output_dir, exist_ok=True)
-        df.to_csv(f"{output_dir}/coach_agent_report.csv", index=False, encoding="utf-8-sig")
+        df.to_csv(f"{output_dir}/coach_agent_report_new.csv", index=False, encoding="utf-8-sig")
         print(f"\n🎉 [全方位防线升级成功] 包含安全审查与相关性分析的中文评测数据已通过 Pytest 钩子落盘！")

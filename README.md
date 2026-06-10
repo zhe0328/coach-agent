@@ -86,6 +86,7 @@ coach-agent/
 │   │   ├── agent/          # Orchestrator, planners, synthesizer, memory
 │   │   ├── api/            # FastAPI routes
 │   │   ├── database/       # MySQL, Neo4j, ChromaDB clients
+│   │   ├── eval/           # Offline eval harness (RAG + agent suites)
 │   │   ├── models/         # Pydantic schemas
 │   │   └── tools/          # sql_tool, rag_tool, graph_tool
 │   ├── data/
@@ -233,8 +234,49 @@ From `backend/` with dependencies installed:
 
 ```bash
 export PYTHONPATH=.
+```
 
-# RAG retrieval quality
+### Eval harness (recommended)
+
+Offline quality checks against fixed golden datasets. **Does not run on live user chat** — use this before merging planner, RAG, or prompt changes.
+
+```bash
+# RAG retrieval quality (Ragas: Context Recall / Precision)
+python -m app.eval.harness --suite rag
+
+# Full agent trajectory (DeepEval: trajectory, faithfulness, safety, relevancy)
+python -m app.eval.harness --suite agent
+
+# Both suites
+python -m app.eval.harness --suite all
+
+# Development: run only the first N golden cases (saves API cost)
+python -m app.eval.harness --suite rag --limit 3
+python -m app.eval.harness --suite agent --limit 2
+
+# Optional overrides
+python -m app.eval.harness --suite rag \
+  --dataset tests/dataset/fitness_ground_truth.json \
+  --output-dir tests/results
+```
+
+| Suite | What it tests | Report |
+|-------|----------------|--------|
+| `rag` | `RAGTool.search_knowledge` vs golden references | `tests/results/rag_eval_latest.csv` |
+| `agent` | Full `CoachOrchestrator` path vs golden set | `tests/results/coach_agent_report_new.csv` |
+
+Requires API keys in `.env` (OpenAI-compatible LLM). RAG suite also needs ChromaDB data loaded.
+
+Harness unit tests (no API keys):
+
+```bash
+pytest tests/eval/test_harness.py -v
+```
+
+### Pytest suites
+
+```bash
+# RAG retrieval (delegates to harness runner)
 pytest tests/tools/test_rag_quality.py -v
 
 # Agent trajectory evaluation (requires DeepEval + golden dataset)
