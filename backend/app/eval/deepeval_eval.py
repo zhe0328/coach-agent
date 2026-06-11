@@ -23,6 +23,7 @@ from app.eval.metrics.agent_metrics import (
     build_agent_metrics,
     check_agent_passed,
 )
+from app.eval.metrics.tool_trace import ToolTraceResult, check_tool_trace
 from app.eval.paths import DEFAULT_AGENT_DATASET, resolve_dataset, resolve_output_dir
 from app.eval.reporters.csv_reporter import write_agent_report_csv
 
@@ -35,6 +36,7 @@ class AgentEvalRecord:
     user_input: str
     actual_output: str
     scores: AgentMetricScores
+    tool_trace: ToolTraceResult
     passed: bool
     expected_tools: list[str]
     actual_tools: list[str]
@@ -53,6 +55,9 @@ class AgentEvalRecord:
             "答案相关理由": self.scores.relevancy_reason,
             "期望工具": ",".join(self.expected_tools),
             "实际工具": ",".join(self.actual_tools),
+            "缺失工具": ",".join(self.tool_trace.missing_tools),
+            "多余工具": ",".join(self.tool_trace.extra_tools),
+            "工具拓扑通过": "是" if self.tool_trace.passed else "否",
             "测试状态": "通过" if self.passed else "失败",
         }
 
@@ -65,6 +70,8 @@ class DeepevalEvalResult:
     mean_faithfulness: float
     mean_safety: float
     mean_relevancy: float
+    mean_tool_trace_accuracy: float
+    tool_trace_pass_count: int
     dataset_path: Path
     output_path: Path | None
     limit: int | None
@@ -79,7 +86,8 @@ class DeepevalEvalResult:
             f"trajectory={self.mean_trajectory:.3f}, "
             f"faithfulness={self.mean_faithfulness:.3f}, "
             f"safety={self.mean_safety:.3f}, "
-            f"relevancy={self.mean_relevancy:.3f}"
+            f"relevancy={self.mean_relevancy:.3f}, "
+            f"tool_trace={self.mean_tool_trace_accuracy:.3f}"
         )
 
 
@@ -207,15 +215,17 @@ async def evaluate_agent_golden(
     )
 
     scores = _scores_from_metrics(metrics)
-    passed = check_agent_passed(scores)
+    tool_trace = check_tool_trace(expected_tools, actual_tools_list)
+    passed = check_agent_passed(scores) and tool_trace.passed
 
     return AgentEvalRecord(
         user_input=user_input,
         actual_output=agent_result.detailed_guidance,
         scores=scores,
+        tool_trace=tool_trace,
         passed=passed,
-        expected_tools=[str(tool) for tool in expected_tools],
-        actual_tools=[str(tool) for tool in actual_tools_list],
+        expected_tools=tool_trace.expected_tools,
+        actual_tools=tool_trace.actual_tools,
     )
 
 
@@ -228,10 +238,14 @@ def _aggregate_results(
 ) -> DeepevalEvalResult:
     case_count = len(records)
     passed_count = sum(1 for record in records if record.passed)
+    tool_trace_pass_count = sum(1 for record in records if record.tool_trace.passed)
     mean_trajectory = sum(record.scores.trajectory for record in records) / case_count
     mean_faithfulness = sum(record.scores.faithfulness for record in records) / case_count
     mean_safety = sum(record.scores.safety for record in records) / case_count
     mean_relevancy = sum(record.scores.relevancy for record in records) / case_count
+    mean_tool_trace_accuracy = (
+        sum(record.tool_trace.accuracy for record in records) / case_count
+    )
 
     return DeepevalEvalResult(
         case_count=case_count,
@@ -240,6 +254,8 @@ def _aggregate_results(
         mean_faithfulness=mean_faithfulness,
         mean_safety=mean_safety,
         mean_relevancy=mean_relevancy,
+        mean_tool_trace_accuracy=mean_tool_trace_accuracy,
+        tool_trace_pass_count=tool_trace_pass_count,
         dataset_path=dataset_path,
         output_path=output_path,
         limit=limit,

@@ -54,6 +54,11 @@ class TestHarnessCLI:
         assert args.suite == "rag"
         assert args.limit == 3
 
+    def test_parser_accepts_compare_baseline(self):
+        parser = build_parser()
+        args = parser.parse_args(["--suite", "rag", "--compare-baseline"])
+        assert args.compare_baseline is True
+
 
 class TestHarnessDryRun:
     def test_rag_suite_with_limit_calls_runner(self, monkeypatch, tmp_path: Path):
@@ -93,6 +98,8 @@ class TestHarnessDryRun:
             mean_faithfulness = 0.9
             mean_safety = 0.9
             mean_relevancy = 0.9
+            mean_tool_trace_accuracy = 1.0
+            tool_trace_pass_count = 2
             dataset_path = tmp_path / "agent.json"
             output_path = tmp_path / "coach_agent_report_new.csv"
             limit = 2

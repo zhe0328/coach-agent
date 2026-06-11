@@ -265,6 +265,13 @@ python -m app.eval.harness --suite agent --limit 2
 python -m app.eval.harness --suite rag \
   --dataset tests/dataset/fitness_ground_truth.json \
   --output-dir tests/results
+
+# Regression gate against app/eval/baseline.json (fail if metrics drop >5%)
+python -m app.eval.harness --suite rag --compare-baseline
+python -m app.eval.harness --suite agent --compare-baseline
+
+# Update baseline after a verified good run (developer utility)
+python -m app.eval.harness --suite all --write-baseline
 ```
 
 
@@ -274,9 +281,11 @@ python -m app.eval.harness --suite rag \
 | `agent` | Full `CoachOrchestrator` path vs golden set     | `tests/results/coach_agent_report_new.csv` |
 
 
-Agent metrics (trajectory, faithfulness, safety, relevancy) live in `app/eval/metrics/agent_metrics.py`. The harness runs agent eval directly; pytest delegates to the same code.
+Agent metrics (trajectory, faithfulness, safety, relevancy) live in `app/eval/metrics/agent_metrics.py`. Tool topology checks use `app/eval/metrics/tool_trace.py`. Baselines are stored in `app/eval/baseline.json` and compared via `--compare-baseline`.
 
 Requires API keys in `.env` (OpenAI-compatible LLM). RAG suite also needs ChromaDB data loaded.
+
+CI: pull requests run a smoke RAG eval (`--limit 3 --compare-baseline`) via `.github/workflows/eval.yml` when secrets are configured.
 
 Harness unit tests (no API keys):
 

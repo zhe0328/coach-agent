@@ -1,0 +1,53 @@
+name: Eval Harness
+
+on:
+  pull_request:
+    paths:
+      - "backend/app/**"
+      - "backend/tests/**"
+      - "backend/requirement.txt"
+      - ".github/workflows/eval.yml"
+  workflow_dispatch:
+
+jobs:
+  rag-eval:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirement.txt
+
+      - name: Install dependencies
+        run: pip install -r requirement.txt
+
+      - name: Run RAG eval harness (smoke)
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+          DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          NEO4J_USERNAME: ${{ secrets.NEO4J_USERNAME }}
+          NEO4J_PASSWORD: ${{ secrets.NEO4J_PASSWORD }}
+          AUTH_SECRET_KEY: ci-secret
+          REDIS_URL: redis://127.0.0.1:6379/0
+        run: |
+          export PYTHONPATH=.
+          python -m app.eval.harness --suite rag --limit 3 --compare-baseline
+
+      - name: Upload eval artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rag-eval-results
+          path: |
+            backend/tests/results/rag_eval_latest.csv
+            backend/app/eval/baseline.json
