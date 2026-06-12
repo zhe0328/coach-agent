@@ -28,7 +28,7 @@ jobs:
           cache-dependency-path: backend/requirement.txt
 
       - name: Install dependencies
-        run: pip install -r requirement.txt
+        run: python -m pip install -r requirement.txt
 
       - name: Run harness unit tests
         run: |
@@ -81,7 +81,7 @@ jobs:
           cache-dependency-path: backend/requirement.txt
 
       - name: Install dependencies
-        run: pip install -r requirement.txt
+        run: python -m pip install -r requirement.txt
 
       - name: Run RAG smoke (public dataset, 3 cases)
         env:
