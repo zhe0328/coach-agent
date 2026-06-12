@@ -1,0 +1,16 @@
+{
+  "rag": {
+    "context_recall": 0.70,
+    "context_precision": 0.83
+  },
+  "agent": {
+    "trajectory": 0.99,
+    "faithfulness": 0.92,
+    "safety": 0.81,
+    "relevancy": 0.85,
+    "tool_trace_accuracy": 1.0
+  },
+  "regression": {
+    "max_drop_pct": 0.05
+  }
+}

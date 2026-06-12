@@ -12,23 +12,21 @@ Coach Agent is a full-stack application:
 The agent retrieves exercises from MySQL, searches fitness knowledge via ChromaDB vector search, and runs injury-aware reasoning over a Neo4j exercise graph — then synthesizes structured coaching responses with exercise recommendations and safety guidance.
 
 ## UI
-<img width="1435" height="735" alt="截屏2026-05-28 16 45 25" src="https://github.com/user-attachments/assets/f45b53fb-8ec8-41e6-b9b2-361825f15bc4" />
 
-
-https://github.com/user-attachments/assets/04fcc5b3-293a-4cd3-ae49-82e29b0d4887
-
-
+[https://github.com/user-attachments/assets/04fcc5b3-293a-4cd3-ae49-82e29b0d4887](https://github.com/user-attachments/assets/04fcc5b3-293a-4cd3-ae49-82e29b0d4887)
 
 ## Why It's Useful
 
-| Feature | Benefit |
-|---------|---------|
-| **Multi-tool agent** | Combines structured queries (SQL), semantic search (RAG), and relationship reasoning (Neo4j) in one workflow |
-| **Injury-aware recommendations** | Graph tool filters or substitutes exercises based on joint load and user injury profile |
-| **Personalized coaching** | User profiles (level, goals, equipment, injuries) persist in MySQL and Neo4j semantic memory |
-| **Session memory** | Redis-backed working memory keeps multi-turn conversations coherent |
-| **Streaming responses** | SSE endpoint reduces time-to-first-token for a smoother chat experience |
-| **Quality evaluation** | DeepEval and pytest suites for agent trajectory and RAG retrieval quality |
+
+| Feature                          | Benefit                                                                                                      |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| **Multi-tool agent**             | Combines structured queries (SQL), semantic search (RAG), and relationship reasoning (Neo4j) in one workflow |
+| **Injury-aware recommendations** | Graph tool filters or substitutes exercises based on joint load and user injury profile                      |
+| **Personalized coaching**        | User profiles (level, goals, equipment, injuries) persist in MySQL and Neo4j semantic memory                 |
+| **Session memory**               | Redis-backed working memory keeps multi-turn conversations coherent                                          |
+| **Streaming responses**          | SSE endpoint reduces time-to-first-token for a smoother chat experience                                      |
+| **Quality evaluation**           | DeepEval and pytest suites for agent trajectory and RAG retrieval quality                                    |
+
 
 ## Architecture
 
@@ -68,6 +66,8 @@ flowchart LR
     ORCH --> REDIS
 ```
 
+
+
 **Agent flow (simplified):**
 
 1. Load user semantic profile from Neo4j and session working memory from Redis.
@@ -86,6 +86,10 @@ coach-agent/
 │   │   ├── agent/          # Orchestrator, planners, synthesizer, memory
 │   │   ├── api/            # FastAPI routes
 │   │   ├── database/       # MySQL, Neo4j, ChromaDB clients
+│   │   ├── eval/           # Offline eval harness (RAG + agent suites)
+│   │   │   ├── harness.py
+│   │   │   ├── metrics/    # Shared DeepEval metric definitions
+│   │   │   └── reporters/  # CSV report writers
 │   │   ├── models/         # Pydantic schemas
 │   │   └── tools/          # sql_tool, rag_tool, graph_tool
 │   ├── data/
@@ -215,15 +219,17 @@ curl -X POST http://localhost:8000/v1/user/signup \
 
 ## API Overview
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/v1/chat` | Streaming coach response (SSE) |
-| `POST` | `/v1/chat/static` | Full coach response (JSON) |
-| `GET`  | `/v1/exercises/{id}` | Exercise detail by ID |
-| `POST` | `/v1/user/signup` | Register and initialize profile |
-| `POST` | `/v1/user/login` | Authenticate user |
-| `GET`  | `/v1/user/profile/{id}` | Fetch user profile |
+
+| Method | Endpoint                  | Description                             |
+| ------ | ------------------------- | --------------------------------------- |
+| `POST` | `/v1/chat`                | Streaming coach response (SSE)          |
+| `POST` | `/v1/chat/static`         | Full coach response (JSON)              |
+| `GET`  | `/v1/exercises/{id}`      | Exercise detail by ID                   |
+| `POST` | `/v1/user/signup`         | Register and initialize profile         |
+| `POST` | `/v1/user/login`          | Authenticate user                       |
+| `GET`  | `/v1/user/profile/{id}`   | Fetch user profile                      |
 | `POST` | `/v1/user/profile/update` | Update profile and sync semantic memory |
+
 
 For request/response schemas, see the interactive docs at `/docs` or `backend/app/models/schema.py`.
 
@@ -233,8 +239,75 @@ From `backend/` with dependencies installed:
 
 ```bash
 export PYTHONPATH=.
+```
 
-# RAG retrieval quality
+### Eval harness (recommended)
+
+Offline quality checks against fixed golden datasets. **Does not run on live user chat** — use this before merging planner, RAG, or prompt changes.
+
+```bash
+# RAG retrieval quality (Ragas: Context Recall / Precision)
+python -m app.eval.harness --suite rag
+
+# Full agent trajectory (DeepEval: trajectory, faithfulness, safety, relevancy)
+python -m app.eval.harness --suite agent
+
+# Both suites
+python -m app.eval.harness --suite all
+
+# Development: run only the first N golden cases (saves API cost)
+python -m app.eval.harness --suite rag --limit 3
+python -m app.eval.harness --suite agent --limit 2
+
+# Optional overrides
+python -m app.eval.harness --suite rag \
+  --dataset tests/dataset/fitness_ground_truth.json \
+  --output-dir tests/results
+
+# Regression gate against app/eval/baseline.json (fail if metrics drop >5%)
+python -m app.eval.harness --suite rag --compare-baseline
+python -m app.eval.harness --suite agent --compare-baseline
+
+# Update baseline after a verified good run (developer utility)
+python -m app.eval.harness --suite all --write-baseline
+```
+
+
+| Suite   | What it tests                                   | Report                                     |
+| ------- | ----------------------------------------------- | ------------------------------------------ |
+| `rag`   | `RAGTool.search_knowledge` vs golden references | `tests/results/rag_eval_latest.csv`        |
+| `agent` | Full `CoachOrchestrator` path vs golden set     | `tests/results/coach_agent_report_new.csv` |
+
+
+Agent metrics (trajectory, faithfulness, safety, relevancy) live in `app/eval/metrics/agent_metrics.py`. Tool topology checks use `app/eval/metrics/tool_trace.py`. Baselines are stored in `app/eval/baseline.json` and compared via `--compare-baseline`.
+
+**Public repo dataset policy:** Full golden sets under `backend/tests/dataset/` stay **gitignored** (not committed). CI and public clones use synthetic 3-case smoke files in `app/eval/datasets/smoke/`. Run full eval locally with your private dataset copy.
+
+**Agent eval does not persist:** Harness and pytest agent eval set `COACH_EVAL_NO_PERSIST=1` automatically — no writes to MySQL (`chat_sessions`, `chat_records`, …), Redis working memory, or Neo4j consolidation. Tools may still **read** SQL/Neo4j/Chroma for realistic routing.
+
+Requires API keys in `.env` (OpenAI-compatible LLM). RAG suite also needs ChromaDB data loaded.
+
+### CI (`.github/workflows/eval.yml`)
+
+
+| Job          | When                                                                                 | Cost                                                                          |
+| ------------ | ------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------- |
+| `eval-unit`  | Every PR                                                                             | No API — `pytest tests/eval/` + smoke JSON validation                         |
+| `eval-smoke` | PR when repo variable `ENABLE_EVAL_SMOKE=true` and same-repo PR (or manual dispatch) | 3 RAG + 3 agent cases on public smoke datasets only (no `--compare-baseline`) |
+
+
+Set `ENABLE_EVAL_SMOKE=true` under **Settings → Secrets and variables → Actions → Variables** when `OPENAI_API_KEY` (and other infra secrets) are configured. Fork PRs do not receive repository secrets. Full regression with `--compare-baseline` stays a local or private nightly job.
+
+Harness unit tests (no API keys):
+
+```bash
+pytest tests/eval/test_harness.py -v
+```
+
+### Pytest suites
+
+```bash
+# RAG retrieval (delegates to harness runner)
 pytest tests/tools/test_rag_quality.py -v
 
 # Agent trajectory evaluation (requires DeepEval + golden dataset)

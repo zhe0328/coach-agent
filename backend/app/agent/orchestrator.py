@@ -25,7 +25,9 @@ from .roles.macroPlanner import MacroPlannerAgent
 from .roles.smallPlanner import SmallPlannerAgent
 from .roles.synthesizer import CoachSynthesizer
 from .utils.logger import LogColor, logger
+from ..config import settings
 from ..models.fitness import ChatRecord, ChatSession, TrainingLog, AgentPlansLog
+from ..models.memory import WorkingMemory
 from ..models.schema import (
     CoachResponse,
     FullPlan,
@@ -358,7 +360,12 @@ class CoachOrchestrator:
             analyzer_final_reason=state.get("analyzer_feedback"),
         )
 
+    def _eval_no_persist(self) -> bool:
+        return settings.EVAL_NO_PERSIST
+
     def _schedule_agent_plan_log(self, state: CoachAgentState) -> None:
+        if self._eval_no_persist():
+            return
         agent_plans_log = self._build_agent_plans_log(state)
         if agent_plans_log is None:
             return
@@ -372,11 +379,13 @@ class CoachOrchestrator:
         user_id = state["user_id"]
         session_id = state["session_id"]
 
-        await self.sql_tool.create_or_ignore_session(
-            ChatSession(session_id=session_id, user_id=user_id)
-        )
-
-        memory = await self.memory_manager.get_session_memory(session_id)
+        if self._eval_no_persist():
+            memory = WorkingMemory(session_id=session_id)
+        else:
+            await self.sql_tool.create_or_ignore_session(
+                ChatSession(session_id=session_id, user_id=user_id)
+            )
+            memory = await self.memory_manager.get_session_memory(session_id)
         memory.reset_loop_state()
 
         semantic_profile = await self.graph_tool.fetch_user_semantic_memory(user_id)
@@ -469,9 +478,10 @@ class CoachOrchestrator:
         if not is_complete:
             memory.latest_analyzer_feedback = feedback
             memory.current_loop_retry_count += 1
-            await self.memory_manager.save_session_memory(
-                state["session_id"], memory
-            )
+            if not self._eval_no_persist():
+                await self.memory_manager.save_session_memory(
+                    state["session_id"], memory
+                )
             updates["memory"] = memory
             updates["loop_count"] = loop_count + 1
             logger.warning(
@@ -522,53 +532,59 @@ class CoachOrchestrator:
             memory.add_message(role="assistant", content=full_reply_text)
             memory.turn_count += 1
             memory.reset_loop_state()
-            pruned = await self.memory_manager.save_session_memory(
-                session_id, memory, summarize=False
-            )
 
-            semantic_profile = state.get("semantic_profile")
-            sniff = await self.memory_consolidator.sniff_delta(
-                user_id=user_id,
-                user_query=user_input,
-                semantic_profile=semantic_profile,
-            )
-            run_consolidation = should_consolidate(memory, sniff=sniff)
+            if self._eval_no_persist():
+                logger.info(
+                    "[Orchestrator] eval no-persist — skipping Redis/MySQL/Neo4j writes"
+                )
+            else:
+                pruned = await self.memory_manager.save_session_memory(
+                    session_id, memory, summarize=False
+                )
 
-            user_record = ChatRecord(
-                session_id=session_id, role="user", content=user_input
-            )
-            coach_record = ChatRecord(
-                session_id=session_id,
-                role="assistant",
-                content=full_reply_text,
-            )
-            training_log = TrainingLog(
-                user_id=user_id,
-                session_id=session_id,
-                coach_reply_summary=coach_response.summary,
-                generated_plan_json=coach_response.exercises or [],
-                is_completed=0,
-            )
-
-            agent_plans_log = self._build_agent_plans_log(state)
-            turn_range = f"turn_{memory.turn_count}" if pruned else None
-            enqueue_after_turn(
-                AfterTurnPayload(
-                    session_id=session_id,
-                    turn_id=memory.turn_count,
+                semantic_profile = state.get("semantic_profile")
+                sniff = await self.memory_consolidator.sniff_delta(
                     user_id=user_id,
-                    user_record=user_record,
-                    coach_record=coach_record,
-                    training_log=training_log,
-                    run_consolidation=run_consolidation,
                     user_query=user_input,
                     semantic_profile=semantic_profile,
-                    sniff=sniff,
-                    agent_plans_log=agent_plans_log,
-                    pruned_messages=pruned or None,
-                    turn_range=turn_range,
                 )
-            )
+                run_consolidation = should_consolidate(memory, sniff=sniff)
+
+                user_record = ChatRecord(
+                    session_id=session_id, role="user", content=user_input
+                )
+                coach_record = ChatRecord(
+                    session_id=session_id,
+                    role="assistant",
+                    content=full_reply_text,
+                )
+                training_log = TrainingLog(
+                    user_id=user_id,
+                    session_id=session_id,
+                    coach_reply_summary=coach_response.summary,
+                    generated_plan_json=coach_response.exercises or [],
+                    is_completed=0,
+                )
+
+                agent_plans_log = self._build_agent_plans_log(state)
+                turn_range = f"turn_{memory.turn_count}" if pruned else None
+                enqueue_after_turn(
+                    AfterTurnPayload(
+                        session_id=session_id,
+                        turn_id=memory.turn_count,
+                        user_id=user_id,
+                        user_record=user_record,
+                        coach_record=coach_record,
+                        training_log=training_log,
+                        run_consolidation=run_consolidation,
+                        user_query=user_input,
+                        semantic_profile=semantic_profile,
+                        sniff=sniff,
+                        agent_plans_log=agent_plans_log,
+                        pruned_messages=pruned or None,
+                        turn_range=turn_range,
+                    )
+                )
 
         return {"memory": memory}
 
@@ -687,5 +703,4 @@ class CoachOrchestrator:
             f"{LogColor.SYNTH}[Synthesizer] ✨ 完成。{LogColor.RESET}\n"
             f"===================================================================\n"
         )
-        print("coach response:", coach_response);
         return coach_response
