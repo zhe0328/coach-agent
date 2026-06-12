@@ -9,15 +9,13 @@ import random
 import string
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from deepeval import evaluate
 from deepeval.evaluate.configs import AsyncConfig
 from deepeval.test_case import LLMTestCase, ToolCall
 from openai import OpenAI
 
-from app.agent.orchestrator import CoachOrchestrator
-from app.config import settings
 from app.eval.metrics.agent_metrics import (
     AgentMetricScores,
     build_agent_metrics,
@@ -26,6 +24,9 @@ from app.eval.metrics.agent_metrics import (
 from app.eval.metrics.tool_trace import ToolTraceResult, check_tool_trace
 from app.eval.paths import DEFAULT_AGENT_DATASET, resolve_dataset, resolve_output_dir
 from app.eval.reporters.csv_reporter import write_agent_report_csv
+
+if TYPE_CHECKING:
+    from app.agent.orchestrator import CoachOrchestrator
 
 _orchestrator: CoachOrchestrator | None = None
 _pytest_records: list[dict[str, Any]] = []
@@ -37,6 +38,8 @@ EVAL_USER_ID = 999_999
 def enable_eval_no_persist() -> None:
     """Prevent agent eval from writing MySQL, Redis, or Neo4j."""
     os.environ["COACH_EVAL_NO_PERSIST"] = "1"
+    from app.config import settings
+
     settings.EVAL_NO_PERSIST = True
 
 
@@ -101,12 +104,16 @@ class DeepevalEvalResult:
 
 
 def _configure_deepeval_env() -> None:
+    from app.config import settings
+
     os.environ["OPENAI_API_KEY"] = settings.OPENAI_API_KEY
     os.environ["OPENAI_BASE_URL"] = settings.OPENAI_BASE_URL or ""
     os.environ["OPENAI_MODEL_NAME"] = "gpt-4o"
 
 
 def _get_orchestrator() -> CoachOrchestrator:
+    from app.agent.orchestrator import CoachOrchestrator
+
     global _orchestrator
     if _orchestrator is None:
         _configure_deepeval_env()

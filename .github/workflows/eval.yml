@@ -13,6 +13,16 @@ jobs:
   eval-unit:
     name: Eval unit tests (no API)
     runs-on: ubuntu-latest
+    env:
+      DB_PASSWORD: ci-test
+      OPENAI_API_KEY: ci-test
+      DEEPSEEK_API_KEY: ci-test
+      NEO4J_USERNAME: neo4j
+      NEO4J_PASSWORD: ci-test
+      LLM_MODEL_NAME: gpt-4o-mini
+      DASHSCOPE_API_KEY: ci-test
+      REDIS_URL: redis://127.0.0.1:6379/0
+      AUTH_SECRET_KEY: ci-test-secret
     defaults:
       run:
         working-directory: backend

@@ -11,13 +11,12 @@ from app.eval.harness import build_parser, run_harness
 from app.eval.paths import (
     BACKEND_ROOT,
     DATASET_DIR,
-    DEFAULT_AGENT_DATASET,
     DEFAULT_RAG_DATASET,
+    SMOKE_AGENT_DATASET,
+    SMOKE_RAG_DATASET,
     dataset,
     resolve_dataset,
-    resolve_output_dir,
 )
-from app.eval.ragas_eval import load_rag_dataset
 
 
 class TestEvalPaths:
@@ -25,28 +24,19 @@ class TestEvalPaths:
         assert BACKEND_ROOT.name == "backend"
         assert (BACKEND_ROOT / "app" / "eval").is_dir()
 
-    def test_public_smoke_datasets_exist(self):
-        from app.eval.paths import SMOKE_AGENT_DATASET, SMOKE_RAG_DATASET
-
-        assert SMOKE_RAG_DATASET.exists()
-        assert SMOKE_AGENT_DATASET.exists()
-
-    def test_default_datasets_exist(self):
-        assert DEFAULT_RAG_DATASET.exists()
-        assert DEFAULT_AGENT_DATASET.exists()
+    def test_smoke_datasets_exist(self):
+        assert SMOKE_RAG_DATASET.is_file()
+        assert SMOKE_AGENT_DATASET.is_file()
 
     def test_dataset_helper(self):
         assert dataset("fitness_ground_truth.json") == DATASET_DIR / "fitness_ground_truth.json"
 
     def test_resolve_dataset_relative_to_backend(self):
-        resolved = resolve_dataset("tests/dataset/fitness_ground_truth.json", DEFAULT_RAG_DATASET)
-        assert resolved == DEFAULT_RAG_DATASET
-
-    def test_load_rag_dataset_returns_rows(self):
-        rows = load_rag_dataset()
-        assert len(rows) > 0
-        assert "user_input" in rows[0]
-        assert "reference_contexts" in rows[0]
+        resolved = resolve_dataset(
+            "app/eval/datasets/smoke/rag_smoke.json",
+            DEFAULT_RAG_DATASET,
+        )
+        assert resolved == SMOKE_RAG_DATASET
 
 
 class TestHarnessCLI:

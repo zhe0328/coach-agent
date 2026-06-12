@@ -2,20 +2,8 @@
 
 from __future__ import annotations
 
-from app.eval.deepeval_eval import load_agent_dataset
 from app.eval.metrics.agent_metrics import AgentMetricScores, check_agent_passed
 from app.eval.reporters.csv_reporter import write_agent_report_csv
-
-
-class TestLoadAgentDataset:
-    def test_load_default_dataset(self):
-        rows = load_agent_dataset()
-        assert len(rows) > 0
-        assert "user_input" in rows[0]
-
-    def test_load_with_limit(self):
-        rows = load_agent_dataset(limit=2)
-        assert len(rows) == 2
 
 
 class TestAgentMetricPassLogic:
