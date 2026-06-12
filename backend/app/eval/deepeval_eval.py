@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from deepeval import evaluate
-from deepeval.evaluate import AsyncConfig
+from deepeval.evaluate.configs import AsyncConfig
 from deepeval.test_case import LLMTestCase, ToolCall
 from openai import OpenAI
 
