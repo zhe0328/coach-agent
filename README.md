@@ -13,8 +13,6 @@ The agent retrieves exercises from MySQL, searches fitness knowledge via ChromaD
 
 ## UI
 
-
-
 [https://github.com/user-attachments/assets/04fcc5b3-293a-4cd3-ae49-82e29b0d4887](https://github.com/user-attachments/assets/04fcc5b3-293a-4cd3-ae49-82e29b0d4887)
 
 ## Why It's Useful
@@ -283,9 +281,22 @@ python -m app.eval.harness --suite all --write-baseline
 
 Agent metrics (trajectory, faithfulness, safety, relevancy) live in `app/eval/metrics/agent_metrics.py`. Tool topology checks use `app/eval/metrics/tool_trace.py`. Baselines are stored in `app/eval/baseline.json` and compared via `--compare-baseline`.
 
+**Public repo dataset policy:** Full golden sets under `backend/tests/dataset/` stay **gitignored** (not committed). CI and public clones use synthetic 3-case smoke files in `app/eval/datasets/smoke/`. Run full eval locally with your private dataset copy.
+
+**Agent eval does not persist:** Harness and pytest agent eval set `COACH_EVAL_NO_PERSIST=1` automatically — no writes to MySQL (`chat_sessions`, `chat_records`, …), Redis working memory, or Neo4j consolidation. Tools may still **read** SQL/Neo4j/Chroma for realistic routing.
+
 Requires API keys in `.env` (OpenAI-compatible LLM). RAG suite also needs ChromaDB data loaded.
 
-CI: pull requests run a smoke RAG eval (`--limit 3 --compare-baseline`) via `.github/workflows/eval.yml` when secrets are configured.
+### CI (`.github/workflows/eval.yml`)
+
+
+| Job          | When                                                                                 | Cost                                                                          |
+| ------------ | ------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------- |
+| `eval-unit`  | Every PR                                                                             | No API — `pytest tests/eval/` + smoke JSON validation                         |
+| `eval-smoke` | PR when repo variable `ENABLE_EVAL_SMOKE=true` and same-repo PR (or manual dispatch) | 3 RAG + 3 agent cases on public smoke datasets only (no `--compare-baseline`) |
+
+
+Set `ENABLE_EVAL_SMOKE=true` under **Settings → Secrets and variables → Actions → Variables** when `OPENAI_API_KEY` (and other infra secrets) are configured. Fork PRs do not receive repository secrets. Full regression with `--compare-baseline` stays a local or private nightly job.
 
 Harness unit tests (no API keys):
 

@@ -30,6 +30,15 @@ from app.eval.reporters.csv_reporter import write_agent_report_csv
 _orchestrator: CoachOrchestrator | None = None
 _pytest_records: list[dict[str, Any]] = []
 
+# Reserved offline-eval identity — must not overlap prod users.
+EVAL_USER_ID = 999_999
+
+
+def enable_eval_no_persist() -> None:
+    """Prevent agent eval from writing MySQL, Redis, or Neo4j."""
+    os.environ["COACH_EVAL_NO_PERSIST"] = "1"
+    settings.EVAL_NO_PERSIST = True
+
 
 @dataclass(frozen=True)
 class AgentEvalRecord:
@@ -157,11 +166,10 @@ def flush_pytest_records(output_dir: str | Path | None = None) -> Path | None:
 
 
 def _random_session_ids() -> tuple[int, str]:
-    user_id = random.randint(10, 100)
-    session_id = "".join(
-        random.choice(string.ascii_letters + string.digits) for _ in range(15)
+    session_id = "eval_" + "".join(
+        random.choice(string.ascii_letters + string.digits) for _ in range(12)
     )
-    return user_id, session_id
+    return EVAL_USER_ID, session_id
 
 
 def _scores_from_metrics(metrics) -> AgentMetricScores:
@@ -183,6 +191,7 @@ async def evaluate_agent_golden(
     *,
     orchestrator: CoachOrchestrator | None = None,
 ) -> AgentEvalRecord:
+    enable_eval_no_persist()
     orchestrator = orchestrator or _get_orchestrator()
     user_id, session_id = _random_session_ids()
     user_input = test_data["user_input"]
@@ -269,6 +278,7 @@ async def run_deepeval_eval_async(
     limit: int | None = None,
     output_dir: str | Path | None = None,
 ) -> DeepevalEvalResult:
+    enable_eval_no_persist()
     rows = load_agent_dataset(dataset_path, limit=limit)
     orchestrator = _get_orchestrator()
 

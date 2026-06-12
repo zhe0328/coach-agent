@@ -33,6 +33,9 @@ class Settings(BaseSettings):
     # Background job queue (Redis + RQ)
     QUEUE_ENABLED: bool = True
 
+    # Offline eval: skip MySQL/Redis/Neo4j writes (reads still allowed)
+    EVAL_NO_PERSIST: bool = False
+
     # Auth (JWT for chat / protected APIs)
     AUTH_SECRET_KEY: str
     AUTH_TOKEN_EXPIRE_HOURS: int = 24

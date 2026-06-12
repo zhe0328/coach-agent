@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -23,6 +24,12 @@ class TestEvalPaths:
     def test_backend_root_points_at_backend(self):
         assert BACKEND_ROOT.name == "backend"
         assert (BACKEND_ROOT / "app" / "eval").is_dir()
+
+    def test_public_smoke_datasets_exist(self):
+        from app.eval.paths import SMOKE_AGENT_DATASET, SMOKE_RAG_DATASET
+
+        assert SMOKE_RAG_DATASET.exists()
+        assert SMOKE_AGENT_DATASET.exists()
 
     def test_default_datasets_exist(self):
         assert DEFAULT_RAG_DATASET.exists()
@@ -58,6 +65,17 @@ class TestHarnessCLI:
         parser = build_parser()
         args = parser.parse_args(["--suite", "rag", "--compare-baseline"])
         assert args.compare_baseline is True
+
+
+class TestEvalNoPersist:
+    def test_enable_eval_no_persist_sets_flag(self, monkeypatch):
+        from app.config import settings
+        from app.eval.deepeval_eval import enable_eval_no_persist
+
+        monkeypatch.setattr(settings, "EVAL_NO_PERSIST", False)
+        enable_eval_no_persist()
+        assert settings.EVAL_NO_PERSIST is True
+        assert os.environ.get("COACH_EVAL_NO_PERSIST") == "1"
 
 
 class TestHarnessDryRun:

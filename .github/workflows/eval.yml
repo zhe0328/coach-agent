@@ -4,13 +4,14 @@ on:
   pull_request:
     paths:
       - "backend/app/**"
-      - "backend/tests/**"
+      - "backend/tests/eval/**"
       - "backend/requirement.txt"
       - ".github/workflows/eval.yml"
   workflow_dispatch:
 
 jobs:
-  rag-eval:
+  eval-unit:
+    name: Eval unit tests (no API)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -29,25 +30,108 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirement.txt
 
-      - name: Run RAG eval harness (smoke)
+      - name: Run harness unit tests
+        run: |
+          export PYTHONPATH=.
+          python -m pytest tests/eval/ -q
+
+      - name: Validate public smoke datasets
+        run: |
+          export PYTHONPATH=.
+          python - <<'PY'
+          from app.eval.paths import SMOKE_AGENT_DATASET, SMOKE_RAG_DATASET
+          from app.eval.deepeval_eval import load_agent_dataset
+          from app.eval.ragas_eval import load_rag_dataset
+
+          rag_rows = load_rag_dataset(SMOKE_RAG_DATASET)
+          agent_rows = load_agent_dataset(SMOKE_AGENT_DATASET)
+          assert len(rag_rows) == 3, rag_rows
+          assert len(agent_rows) == 3, agent_rows
+          print("Smoke datasets OK:", SMOKE_RAG_DATASET.name, SMOKE_AGENT_DATASET.name)
+          PY
+
+  eval-smoke:
+    name: LLM smoke (3 RAG + 3 agent)
+    runs-on: ubuntu-latest
+    needs: eval-unit
+    # Secrets cannot be referenced in job `if`; use repo variable ENABLE_EVAL_SMOKE=true.
+    # Fork PRs never receive secrets — skip smoke even when the variable is set.
+    if: >-
+      vars.ENABLE_EVAL_SMOKE == 'true' &&
+      (github.event_name == 'workflow_dispatch' ||
+       github.event.pull_request.head.repo.full_name == github.repository)
+    defaults:
+      run:
+        working-directory: backend
+
+    services:
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirement.txt
+
+      - name: Install dependencies
+        run: pip install -r requirement.txt
+
+      - name: Run RAG smoke (public dataset, 3 cases)
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
           DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
-          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
-          NEO4J_USERNAME: ${{ secrets.NEO4J_USERNAME }}
-          NEO4J_PASSWORD: ${{ secrets.NEO4J_PASSWORD }}
-          AUTH_SECRET_KEY: ci-secret
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY || 'ci-placeholder' }}
+          DEEPSEEK_BASE_URL: ${{ secrets.DEEPSEEK_BASE_URL || 'https://api.deepseek.com' }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD || 'ci-placeholder' }}
+          DB_USERNAME: ${{ secrets.DB_USERNAME || 'root' }}
+          DB_DATABASE: ${{ secrets.DB_DATABASE || 'coach_agent_db' }}
+          NEO4J_USERNAME: ${{ secrets.NEO4J_USERNAME || 'neo4j' }}
+          NEO4J_PASSWORD: ${{ secrets.NEO4J_PASSWORD || 'ci-placeholder' }}
+          LLM_MODEL_NAME: ${{ secrets.LLM_MODEL_NAME || 'gpt-4o-mini' }}
+          AUTH_SECRET_KEY: ci-eval-smoke-secret
           REDIS_URL: redis://127.0.0.1:6379/0
         run: |
           export PYTHONPATH=.
-          python -m app.eval.harness --suite rag --limit 3 --compare-baseline
+          python -m app.eval.harness \
+            --suite rag \
+            --dataset app/eval/datasets/smoke/rag_smoke.json \
+            --limit 3
 
-      - name: Upload eval artifacts
+      - name: Run agent smoke (public dataset, 3 cases)
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+          DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY || 'ci-placeholder' }}
+          DEEPSEEK_BASE_URL: ${{ secrets.DEEPSEEK_BASE_URL || 'https://api.deepseek.com' }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD || 'ci-placeholder' }}
+          DB_USERNAME: ${{ secrets.DB_USERNAME || 'root' }}
+          DB_DATABASE: ${{ secrets.DB_DATABASE || 'coach_agent_db' }}
+          NEO4J_USERNAME: ${{ secrets.NEO4J_USERNAME || 'neo4j' }}
+          NEO4J_PASSWORD: ${{ secrets.NEO4J_PASSWORD || 'ci-placeholder' }}
+          LLM_MODEL_NAME: ${{ secrets.LLM_MODEL_NAME || 'gpt-4o-mini' }}
+          AUTH_SECRET_KEY: ci-eval-smoke-secret
+          REDIS_URL: redis://127.0.0.1:6379/0
+        run: |
+          export PYTHONPATH=.
+          python -m app.eval.harness \
+            --suite agent \
+            --dataset app/eval/datasets/smoke/agent_smoke.json \
+            --limit 3
+
+      - name: Upload smoke artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: rag-eval-results
+          name: eval-smoke-results
           path: |
             backend/tests/results/rag_eval_latest.csv
-            backend/app/eval/baseline.json
+            backend/tests/results/coach_agent_report_new.csv

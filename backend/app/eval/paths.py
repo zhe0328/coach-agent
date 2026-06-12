@@ -12,6 +12,10 @@ RESULTS_DIR = TESTS_ROOT / "results"
 DEFAULT_RAG_DATASET = DATASET_DIR / "fitness_ground_truth.json"
 DEFAULT_AGENT_DATASET = DATASET_DIR / "coach_agent_advanced_goldens.json"
 
+EVAL_ROOT = Path(__file__).resolve().parent
+SMOKE_RAG_DATASET = EVAL_ROOT / "datasets" / "smoke" / "rag_smoke.json"
+SMOKE_AGENT_DATASET = EVAL_ROOT / "datasets" / "smoke" / "agent_smoke.json"
+
 RAG_TEST_FILE = TESTS_ROOT / "tools" / "test_rag_quality.py"
 AGENT_TEST_FILE = TESTS_ROOT / "agent" / "test_agent_quality.py"
 
