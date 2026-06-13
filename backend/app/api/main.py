@@ -15,6 +15,7 @@ from ..models.schema import (
 )
 from ..agent.utils.logger import logger, LogColor
 from ..queue.enqueue import enqueue_user_semantic_init
+from ..serving.session_lock import SessionLockNotAcquired, is_session_locked
 from .auth import (
     TokenPayload,
     assert_user_matches_token,
@@ -68,6 +69,14 @@ async def get_exercise(exercise_id: str):
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+def _session_busy_http_exception(exc: SessionLockNotAcquired) -> HTTPException:
+    return HTTPException(
+        status_code=409,
+        detail="Session is processing another message. Please retry shortly.",
+        headers={"Retry-After": str(exc.retry_after)},
+    )
+
+
 @app.post("/v1/chat")
 async def chat_endpoint(
     request: ChatRequest,
@@ -76,13 +85,30 @@ async def chat_endpoint(
     """SSE streaming chat — runs pipeline through analyzer, streams synthesizer output."""
     assert_user_matches_token(request.user_id, current_user)
 
+    if await is_session_locked(request.session_id):
+        raise _session_busy_http_exception(
+            SessionLockNotAcquired(
+                request.session_id,
+                retry_after=settings.SESSION_LOCK_RETRY_AFTER_SECONDS,
+            )
+        )
+
     async def generate():
-        async for event in orchestrator.execute_stream(
-            request.user_id,
-            request.session_id,
-            request.message,
-        ):
-            yield f"data: {json.dumps(event, ensure_ascii=False, default=str)}\n\n"
+        try:
+            async for event in orchestrator.execute_stream(
+                request.user_id,
+                request.session_id,
+                request.message,
+            ):
+                yield f"data: {json.dumps(event, ensure_ascii=False, default=str)}\n\n"
+        except SessionLockNotAcquired as exc:
+            error_event = {
+                "type": "error",
+                "code": 409,
+                "detail": str(exc),
+                "retry_after": exc.retry_after,
+            }
+            yield f"data: {json.dumps(error_event, ensure_ascii=False)}\n\n"
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream")
@@ -94,9 +120,12 @@ async def chat_static(
     current_user: TokenPayload = Depends(get_current_user),
 ):
     assert_user_matches_token(request.user_id, current_user)
-    response = await orchestrator.execute(
-        request.user_id, request.session_id, request.message
-    )
+    try:
+        response = await orchestrator.execute(
+            request.user_id, request.session_id, request.message
+        )
+    except SessionLockNotAcquired as exc:
+        raise _session_busy_http_exception(exc) from exc
     if hasattr(response, "model_dump"):
         return {"data": response.model_dump()}
     return {"data": response}
@@ -268,6 +297,8 @@ async def close_chat_session(
         assert_user_matches_token(owner_id, current_user)
 
         return await orchestrator.close_session(owner_id, session_id)
+    except SessionLockNotAcquired as exc:
+        raise _session_busy_http_exception(exc) from exc
     except HTTPException:
         raise
     except Exception as e:

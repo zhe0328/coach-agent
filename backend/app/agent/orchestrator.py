@@ -43,6 +43,7 @@ from ..queue.enqueue import (
     enqueue_agent_plans_log,
     enqueue_consolidation,
 )
+from ..serving.session_lock import acquire_session_lock
 from ..tools.graph_tool import GraphTool
 from ..tools.rag_tool import RAGTool
 from ..tools.sql_tool import SQLTool
@@ -594,6 +595,14 @@ class CoachOrchestrator:
         session_id: str,
     ) -> dict[str, Any]:
         """Finalize a session: optional warm summary already in Redis; force profile consolidation."""
+        async with acquire_session_lock(session_id):
+            return await self._close_session_unlocked(user_id, session_id)
+
+    async def _close_session_unlocked(
+        self,
+        user_id: int,
+        session_id: str,
+    ) -> dict[str, Any]:
         memory = await self.memory_manager.get_session_memory(session_id)
         memory.pending_consolidation = True
 
@@ -642,41 +651,41 @@ class CoachOrchestrator:
         user_input: str,
     ):
         """Run planner/tools/analyzer, stream synthesizer tokens, then persist."""
+        async with acquire_session_lock(session_id):
+            initial_state: CoachAgentState = {
+                "user_id": user_id,
+                "session_id": session_id,
+                "user_input": user_input,
+                "max_loops": 3,
+            }
 
-        initial_state: CoachAgentState = {
-            "user_id": user_id,
-            "session_id": session_id,
-            "user_input": user_input,
-            "max_loops": 3,
-        }
+            prep_state = await self._prep_graph.ainvoke(initial_state)
+            macro_plan = prep_state.get("macro_plan")
+            if macro_plan is None:
+                macro_plan = MacroPlanSchema(
+                    routing_mode="chat_only",
+                    selected_tools=[],
+                    routing_reason="无宏观计划，兜底闲聊",
+                )
 
-        prep_state = await self._prep_graph.ainvoke(initial_state)
-        macro_plan = prep_state.get("macro_plan")
-        if macro_plan is None:
-            macro_plan = MacroPlanSchema(
-                routing_mode="chat_only",
-                selected_tools=[],
-                routing_reason="无宏观计划，兜底闲聊",
+            executed_tasks = prep_state.get("executed_tasks_snapshot") or []
+            guidance_parts: list[str] = []
+
+            async for chunk in self.synthesizer.stream_guidance(
+                user_input=user_input,
+                macro_plan=macro_plan,
+                executed_tasks=executed_tasks,
+            ):
+                guidance_parts.append(chunk)
+                yield {"type": "chunk", "content": chunk}
+
+            coach_response = self.synthesizer.build_response_from_guidance(
+                guidance_text="".join(guidance_parts),
+                macro_plan=macro_plan,
+                executed_tasks=executed_tasks,
             )
-
-        executed_tasks = prep_state.get("executed_tasks_snapshot") or []
-        guidance_parts: list[str] = []
-
-        async for chunk in self.synthesizer.stream_guidance(
-            user_input=user_input,
-            macro_plan=macro_plan,
-            executed_tasks=executed_tasks,
-        ):
-            guidance_parts.append(chunk)
-            yield {"type": "chunk", "content": chunk}
-
-        coach_response = self.synthesizer.build_response_from_guidance(
-            guidance_text="".join(guidance_parts),
-            macro_plan=macro_plan,
-            executed_tasks=executed_tasks,
-        )
-        await self._node_persist({**prep_state, "coach_response": coach_response})
-        yield {"type": "done", "data": coach_response.model_dump()}
+            await self._node_persist({**prep_state, "coach_response": coach_response})
+            yield {"type": "done", "data": coach_response.model_dump()}
 
     async def execute(
         self,
@@ -684,23 +693,24 @@ class CoachOrchestrator:
         session_id: str,
         user_input: str,
     ):
-        logger.info(
-            f"\n==================== 🤖 NEW COACH AGENT REQUEST ===================="
-        )
-        logger.info(f"用户输入: '{user_input}'")
+        async with acquire_session_lock(session_id):
+            logger.info(
+                f"\n==================== 🤖 NEW COACH AGENT REQUEST ===================="
+            )
+            logger.info(f"用户输入: '{user_input}'")
 
-        initial_state: CoachAgentState = {
-            "user_id": user_id,
-            "session_id": session_id,
-            "user_input": user_input,
-            "max_loops": 3,
-        }
+            initial_state: CoachAgentState = {
+                "user_id": user_id,
+                "session_id": session_id,
+                "user_input": user_input,
+                "max_loops": 3,
+            }
 
-        final_state = await self._graph.ainvoke(initial_state)
-        coach_response = final_state.get("coach_response")
+            final_state = await self._graph.ainvoke(initial_state)
+            coach_response = final_state.get("coach_response")
 
-        logger.info(
-            f"{LogColor.SYNTH}[Synthesizer] ✨ 完成。{LogColor.RESET}\n"
-            f"===================================================================\n"
-        )
-        return coach_response
+            logger.info(
+                f"{LogColor.SYNTH}[Synthesizer] ✨ 完成。{LogColor.RESET}\n"
+                f"===================================================================\n"
+            )
+            return coach_response

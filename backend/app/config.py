@@ -33,6 +33,11 @@ class Settings(BaseSettings):
     # Background job queue (Redis + RQ)
     QUEUE_ENABLED: bool = True
 
+    # Per-session request serialization (Phase 2a)
+    SESSION_LOCK_ENABLED: bool = True
+    SESSION_LOCK_TTL_SECONDS: int = 90
+    SESSION_LOCK_RETRY_AFTER_SECONDS: int = 2
+
     # Offline eval: skip MySQL/Redis/Neo4j writes (reads still allowed)
     EVAL_NO_PERSIST: bool = False
 
