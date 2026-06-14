@@ -17,13 +17,23 @@ from tenacity import (
 from .analyzer import PlanAnalyzer
 from .graph.coach_graph import build_coach_graph
 from .graph.state import CoachAgentState
+from .context.context_builder import build_planner_context
+from .intent.intent_state import build_planner_history_messages, project_intent
+from .intent.fitness_lexicon import FitnessLexicon
+from .policy.joint_term_loader import load_joint_sensitive_terms
 from .memory.memory_consolidator import MemoryConsolidator
+from .memory.state_patch import merge_state_patch_from_intent
 from .memory.memory_manager import WorkingMemoryManager
 from .memory.memory_policy import should_consolidate
 from .prompts.skill_guide import get_skill_by_node
 from .roles.macroPlanner import MacroPlannerAgent
 from .roles.smallPlanner import SmallPlannerAgent
+from .roles.sql_param_sanitizer import SqlParamCatalog, load_sql_param_catalog
 from .roles.synthesizer import CoachSynthesizer
+from .policy.intent_validators import (
+    should_force_chat_only,
+    validate_and_patch_macro_plan,
+)
 from .utils.logger import LogColor, logger
 from ..config import settings
 from ..models.fitness import ChatRecord, ChatSession, TrainingLog, AgentPlansLog
@@ -70,6 +80,52 @@ class CoachOrchestrator:
         self._prep_graph = build_coach_graph(
             self, interrupt_before=["synthesizer"]
         )
+        self._fitness_lexicon: FitnessLexicon | None = None
+        self._sql_param_catalog: SqlParamCatalog | None = None
+        self._joint_terms_loaded = False
+
+    async def _get_fitness_lexicon(self) -> FitnessLexicon:
+        if self._fitness_lexicon is None:
+            self._fitness_lexicon = await FitnessLexicon.load(self.sql_tool)
+        return self._fitness_lexicon
+
+    async def _get_sql_param_catalog(self) -> SqlParamCatalog:
+        if self._sql_param_catalog is None:
+            self._sql_param_catalog = await load_sql_param_catalog(self.sql_tool)
+        return self._sql_param_catalog
+
+    async def _ensure_joint_terms(self) -> None:
+        if self._joint_terms_loaded:
+            return
+        await load_joint_sensitive_terms(self.graph_tool)
+        self._joint_terms_loaded = True
+
+    def _build_intent_audit(self, state: CoachAgentState) -> dict[str, Any]:
+        intent_state = state.get("intent_state")
+        macro_plan = state.get("macro_plan")
+        audit: dict[str, Any] = {
+            "policy_actions": state.get("policy_actions") or [],
+        }
+        if intent_state:
+            audit["intent_slots"] = intent_state.slots
+            audit["fitness_score"] = intent_state.fitness_score
+            audit["routing_hint"] = intent_state.routing_hint
+            audit["lexicon_hits"] = intent_state.lexicon_hits
+        planner_context = state.get("planner_context")
+        if planner_context:
+            audit["context_segments"] = planner_context.explain()
+            audit["context_used_tokens"] = planner_context.used_tokens
+        if macro_plan:
+            audit["routing_mode"] = macro_plan.routing_mode
+            audit["rag_intent_lineage"] = [
+                {
+                    "task_id": t.task_id,
+                    "rag_intent": t.rag_intent,
+                }
+                for t in macro_plan.selected_tools
+                if t.tool_name == "rag_tool"
+            ]
+        return audit
 
     @retry(
         stop=stop_after_attempt(3),
@@ -358,6 +414,7 @@ class CoachOrchestrator:
                 default=str,
             ),
             analyzer_final_reason=state.get("analyzer_feedback"),
+            intent_audit=self._build_intent_audit(state),
         )
 
     def _eval_no_persist(self) -> bool:
@@ -408,22 +465,99 @@ class CoachOrchestrator:
             "executed_tasks_snapshot": [],
         }
 
+    async def _node_intent_projector(self, state: CoachAgentState) -> dict:
+        memory = state["memory"]
+        history_messages = state.get("history_messages") or []
+        semantic_profile = state.get("semantic_profile") or []
+        lexicon = await self._get_fitness_lexicon()
+        await self._ensure_joint_terms()
+
+        intent_state = project_intent(
+            state["user_input"],
+            session_summary=memory.session_summary,
+            semantic_profile=semantic_profile,
+            analyzer_feedback=memory.latest_analyzer_feedback,
+            state_patch_goal=memory.state_patch.user_goal,
+            lexicon=lexicon,
+        )
+        planner_history = build_planner_history_messages(history_messages)
+
+        logger.info(
+            f"[IntentProjector] slots={intent_state.slots} "
+            f"routing_hint={intent_state.routing_hint} "
+            f"fitness_score={intent_state.fitness_score} "
+            f"rag_hint={intent_state.rag_intent_hint}"
+        )
+
+        return {
+            "intent_state": intent_state,
+            "planner_history_messages": planner_history,
+            "policy_actions": [],
+        }
+
+    async def _node_context_builder(self, state: CoachAgentState) -> dict:
+        memory = state["memory"]
+        planner_context = build_planner_context(
+            user_input=state["user_input"],
+            memory=memory,
+            semantic_profile=state.get("semantic_profile"),
+            intent_state=state.get("intent_state"),
+            planner_history_messages=state.get("planner_history_messages"),
+        )
+        logger.info(
+            f"[ContextBuilder] segments={len(planner_context.segments)} "
+            f"used_tokens={planner_context.used_tokens}/"
+            f"{planner_context.budget_max_tokens}"
+        )
+        return {"planner_context": planner_context}
+
     async def _node_macro_planner(self, state: CoachAgentState) -> dict:
         loop_count = state.get("loop_count", 0)
         logger.info(f"\n--- 🔄 [ReAct 第 {loop_count + 1} 轮] macro_planner ---")
 
-        try:
-            macro_plan = await self.macroPlanner.plan(
-                state["user_input"],
-                state["history_messages"],
-                state["semantic_profile"],
-                state["memory"],
+        intent_state = state.get("intent_state")
+        if should_force_chat_only(intent_state):
+            macro_plan = MacroPlanSchema(
+                routing_mode="chat_only",
+                selected_tools=[],
+                routing_reason="fitness_score=0 — skipped macro LLM (IC-P1 gate)",
             )
             return {
                 "macro_plan": macro_plan,
                 "planner_offline": False,
                 "skip_analyzer": False,
+                "routing_mode": "chat_only",
+                "policy_actions": ["forced_chat_only:fitness_score"],
+            }
+
+        try:
+            macro_plan = await self.macroPlanner.plan(
+                state["user_input"],
+                state.get("planner_history_messages")
+                or state.get("history_messages")
+                or [],
+                state["semantic_profile"],
+                state["memory"],
+                state.get("intent_state"),
+                state.get("planner_context"),
+            )
+            macro_plan, policy_actions = validate_and_patch_macro_plan(
+                state["user_input"],
+                macro_plan,
+                state.get("semantic_profile"),
+                state.get("intent_state"),
+            )
+            if policy_actions:
+                logger.warning(
+                    f"{LogColor.PLAN}[Planner] Policy patched macro plan: "
+                    f"{policy_actions}{LogColor.RESET}"
+                )
+            return {
+                "macro_plan": macro_plan,
+                "planner_offline": False,
+                "skip_analyzer": False,
                 "routing_mode": macro_plan.routing_mode,
+                "policy_actions": policy_actions,
             }
         except (APIConnectionError, APIStatusError) as err:
             logger.error(
@@ -440,7 +574,11 @@ class CoachOrchestrator:
 
     async def _node_small_planner(self, state: CoachAgentState) -> dict:
         macro_plan = state["macro_plan"]
-        full_plan = await self.smallPlanner.assemble_full_plan(macro_plan)
+        sql_param_catalog = await self._get_sql_param_catalog()
+        full_plan = await self.smallPlanner.assemble_full_plan(
+            macro_plan,
+            sql_param_catalog=sql_param_catalog,
+        )
         logger.info(
             f'{LogColor.PLAN}[Planner] FullPlan: {len(full_plan.tasks)} tasks — '
             f'"{full_plan.logic_chain}"{LogColor.RESET}'
@@ -532,6 +670,15 @@ class CoachOrchestrator:
             memory.add_message(role="assistant", content=full_reply_text)
             memory.turn_count += 1
             memory.reset_loop_state()
+
+            intent_state = state.get("intent_state")
+            if intent_state:
+                memory.state_patch = merge_state_patch_from_intent(
+                    memory.state_patch,
+                    user_goal=intent_state.user_goal,
+                    constraints=intent_state.constraints,
+                    slots=intent_state.slots,
+                )
 
             if self._eval_no_persist():
                 logger.info(

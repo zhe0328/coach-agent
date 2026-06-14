@@ -1,0 +1,92 @@
+[
+  {
+    "id": "greeting_chat_only",
+    "input": "你好",
+    "profile": null,
+    "expect": {
+      "routing_hint": "chat_only_candidate",
+      "fitness_score_max": 0,
+      "force_chat_only": true
+    }
+  },
+  {
+    "id": "greeting_with_fitness_intent",
+    "input": "你好，我想用哑铃练胸",
+    "profile": null,
+    "expect": {
+      "routing_hint": "standard",
+      "fitness_score_min": 1,
+      "force_chat_only": false
+    }
+  },
+  {
+    "id": "safety_requires_graph",
+    "input": "深蹲膝盖痛，推荐替代动作",
+    "profile": null,
+    "expect": {
+      "requires_graph": true,
+      "policy_action_contains": "injected_graph_tool:safety"
+    }
+  },
+  {
+    "id": "knee_profile_squat",
+    "input": "我想练深蹲",
+    "profile": [{"injuries": ["膝关节"], "equipment_list": ["自重"], "level": "beginner"}],
+    "expect": {
+      "requires_graph": true,
+      "triggered_joints": ["膝关节"]
+    }
+  },
+  {
+    "id": "shoulder_profile_bench",
+    "input": "今天练卧推",
+    "profile": [{"injuries": ["肩关节"], "equipment_list": ["哑铃"], "level": "intermediate"}],
+    "expect": {
+      "requires_graph": true,
+      "triggered_joints": ["肩关节"]
+    }
+  },
+  {
+    "id": "spine_profile_legs",
+    "input": "练大腿和臀",
+    "profile": [{"injuries": ["脊柱"], "equipment_list": ["哑铃"], "level": "beginner"}],
+    "expect": {
+      "requires_graph": true,
+      "triggered_joints": ["脊柱"]
+    }
+  },
+  {
+    "id": "rag_knowledge_hint",
+    "input": "先做高翻还是先做深蹲？",
+    "profile": null,
+    "expect": {
+      "rag_intent_hint": "knowledge",
+      "slot_contains": "knowledge"
+    }
+  },
+  {
+    "id": "rag_exercise_hint",
+    "input": "波比跳怎么做，步骤和发力感",
+    "profile": null,
+    "expect": {
+      "rag_intent_hint": "exercise"
+    }
+  },
+  {
+    "id": "noise_punctuation",
+    "input": "。。。",
+    "profile": null,
+    "expect": {
+      "force_chat_only": true
+    }
+  },
+  {
+    "id": "lexicon_longest_match",
+    "input": "罗马尼亚硬拉怎么做",
+    "lexicon_terms": ["罗马尼亚硬拉", "硬拉"],
+    "expect": {
+      "lexicon_hits_contain": "罗马尼亚硬拉",
+      "lexicon_hits_exclude": "硬拉"
+    }
+  }
+]

@@ -44,6 +44,13 @@ class RAGSearchSchema(BaseModel):
         description="exercise: 仅查询特定动作实操/发力感; knowledge: 查询动作组合逻辑/生理机制/课表编排/疲劳等理论; mixed: 两者皆有"
     )
 
+
+class RAGQueryExtractSchema(BaseModel):
+    """Small planner extracts query text only; intent comes from macro rag_intent."""
+
+    query_text: str = Field(..., description="精炼后的 RAG 检索关键词")
+    top_k: int = Field(5, description="检索相关的知识条目数量")
+
 class GraphReasoningSchema(BaseModel):
     exercise_name: Optional[str] = Field(None, description="动作名称")
     muscle_name: Optional[str] = Field(None, description="肌肉名称，如'胸肌'")

@@ -11,6 +11,7 @@ from app.agent.memory.session_summarizer import (
     merge_session_summary,
     summarize_pruned_turns,
 )
+from app.agent.memory.state_patch import merge_state_patch_from_pruned
 from app.agent.utils.logger import logger, LogColor
 
 if TYPE_CHECKING:
@@ -96,7 +97,13 @@ class WorkingMemoryManager:
         summarize_fn: SummarizeFn | None = None,
     ) -> None:
         if not pruned or not summarize:
+            if pruned:
+                memory.state_patch = merge_state_patch_from_pruned(
+                    memory.state_patch, pruned
+                )
             return
+
+        memory.state_patch = merge_state_patch_from_pruned(memory.state_patch, pruned)
 
         chunk = await summarize_pruned_turns(
             pruned,

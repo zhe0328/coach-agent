@@ -313,6 +313,13 @@ class SQLTool:
                         executed_payload, ensure_ascii=False, default=str
                     )
 
+                final_reason = agentPlanLog.analyzer_final_reason or ""
+                if agentPlanLog.intent_audit:
+                    final_reason = (
+                        f"{final_reason}\n[INTENT_AUDIT]"
+                        f"{json.dumps(agentPlanLog.intent_audit, ensure_ascii=False, default=str)}"
+                    ).strip()
+
                 cursor.execute(
                     query,
                     (
@@ -322,7 +329,7 @@ class SQLTool:
                         json.dumps(extracted_data, ensure_ascii=False),
                         json.dumps(full_plan_payload, ensure_ascii=False, default=str),
                         executed_payload,
-                        agentPlanLog.analyzer_final_reason,
+                        final_reason or None,
                     ),
                 )
             conn.commit()
@@ -531,6 +538,67 @@ class SQLTool:
                 )
             )
         return results
+
+    def _sync_fetch_fitness_lexicon_terms(self) -> list[str]:
+        query = """
+            SELECT DISTINCT term FROM (
+                SELECT name_zh AS term FROM exercises
+                    WHERE name_zh IS NOT NULL AND TRIM(name_zh) != ''
+                UNION
+                SELECT t.name_zh FROM targets t
+                    WHERE t.name_zh IS NOT NULL AND TRIM(t.name_zh) != ''
+                UNION
+                SELECT b.name_zh FROM body_parts b
+                    WHERE b.name_zh IS NOT NULL AND TRIM(b.name_zh) != ''
+                UNION
+                SELECT eq.name_zh FROM equipments eq
+                    WHERE eq.name_zh IS NOT NULL AND TRIM(eq.name_zh) != ''
+                UNION
+                SELECT c.name_zh FROM categories c
+                    WHERE c.name_zh IS NOT NULL AND TRIM(c.name_zh) != ''
+            ) lex
+        """
+        with self.db_manager.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(query)
+                return [row[0] for row in cursor.fetchall() if row and row[0]]
+
+    async def fetch_fitness_lexicon_terms(self) -> list[str]:
+        return await asyncio.to_thread(self._sync_fetch_fitness_lexicon_terms)
+
+    def _sync_fetch_sql_param_catalog(self):
+        from app.agent.roles.sql_param_sanitizer import SqlParamCatalog
+
+        body_part_sql = "SELECT name_zh FROM body_parts WHERE name_zh IS NOT NULL"
+        target_map_sql = """
+            SELECT DISTINCT t.name_zh AS target_zh, b.name_zh AS body_part_zh
+            FROM exercises e
+            JOIN targets t ON e.target_id = t.id
+            JOIN body_parts b ON e.body_part_id = b.id
+            UNION
+            SELECT DISTINCT t.name_zh, b.name_zh
+            FROM exercise_secondary_muscles esm
+            JOIN exercises e ON esm.exercise_id = e.id
+            JOIN targets t ON esm.target_id = t.id
+            JOIN body_parts b ON e.body_part_id = b.id
+        """
+        with self.db_manager.get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(body_part_sql)
+                body_part_rows = [row[0] for row in cursor.fetchall() if row and row[0]]
+                cursor.execute(target_map_sql)
+                target_rows = [
+                    (row[0], row[1])
+                    for row in cursor.fetchall()
+                    if row and row[0] and row[1]
+                ]
+        return SqlParamCatalog.from_db_rows(
+            body_part_rows=body_part_rows,
+            target_body_part_rows=target_rows,
+        )
+
+    async def fetch_sql_param_catalog(self):
+        return await asyncio.to_thread(self._sync_fetch_sql_param_catalog)
 
     async def get_user_sessions(self, user_id: str):
         sql_query = """SELECT cr.id as id,

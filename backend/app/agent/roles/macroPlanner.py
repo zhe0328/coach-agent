@@ -1,25 +1,10 @@
 from app.models.memory import WorkingMemory
 from ...models.schema import MacroPlanSchema
+from ..context.context_builder import PlannerContextBundle, compile_macro_messages
+from ..intent.intent_state import IntentState
+from ..utils.logger import LogColor, logger
 
-class MacroPlannerAgent:
-    def __init__(self, client):
-        self.client = client
-
-    async def plan(self, user_input: str, history_context: list, semantic_profile: list[dict[str, any]], memory: WorkingMemory) -> MacroPlanSchema:
-        semantic_constraints = ""
-        if len(semantic_profile) != 0:
-            semantic_constraints = (
-                f"【来自图数据库（Neo4j）的当前用户长效硬性指标与物理红线】:\n"
-                f"- 用户当前体能级别硬钢印: {semantic_profile[0].get('level', 'beginner')}\n"
-                f"- 用户当前【主诉受损/严禁过度负载】的身体关节: {', '.join(semantic_profile[0].get('injuries', [])) if semantic_profile[0].get('injuries') else '全身健康无受损'}\n"
-                f"- 用户家里目前【仅拥有且仅能调遣】的常备训练器械库: {', '.join(semantic_profile[0].get('equipment_list', [])) if semantic_profile[0].get('equipment_list') else '自重'}\n\n"
-                f"【最高硬核调度约束】：\n"
-                f"1. 安全红线：如果受损关节包含'脊柱'（如腰椎突出），本轮如果涉及到下肢或背部训练，你【必须且强制】选装图任务实例（task_graph_injury）去从医学图谱层面严格拉黑并剔除高风险重载动作（如硬拉、杠铃深蹲）！\n"
-                f"2. 器械边界：在为工具拆分多任务实例（selected_tools）时，你配置的专属 `focused_query` 和 `reason` 中【必须严格限定器械范围】！如果可用器械库只有'哑铃,弹力带'，你的 `focused_query` 绝对禁止提及'杠铃、单杠'等无中生有的违规设备，防止微观参数提取器发生符号漂移脑补！"
-                f"你【必须且强制】将当前用户的体能级别字面量「{semantic_profile[0].get('level', 'beginner')}」作为核心约束词，直接写入 `focused_query` 文本中！\n"
-            )
-
-        system_prompt = f"""你是一个专业的健身训练调度员（Macro Planner）。你的唯一任务是审视用户的需求，从三个专业工具中选择最合适的组合，并定义它们的依赖拓扑关系。
+MACRO_SYSTEM_PROMPT = """你是一个专业的健身训练调度员（Macro Planner）。你的唯一任务是审视用户的需求，从三个专业工具中选择最合适的组合，并定义它们的依赖拓扑关系。
 
             【微观单槽（Single Slot）多实例拆分铁律 —— 违反则下游全盘崩溃】：
             你的下游微观工具（SQL_tool、graph_tool）在参数设计上是【单内聚的】，它们每次【只支持且只允许】接收单个器械或单个关节名称！
@@ -37,14 +22,14 @@ class MacroPlannerAgent:
             1. SQL_tool (结构化筛选)：只要用户提到了目标肌肉、器材名称、难度等级、动作类别或身体部位时触发。
             2. graph_tool (生理逻辑推理)：涉及动作切换(太难/太易)、伤病规避(痛/受伤/关节不适/关节强化)、或寻找协同动作时触发。
             3. rag_tool (双库检索)：
-            - 用户问具体动作“怎么做”、精细发力感 -> 设置 intent="exercise"
-            - 用户问动作先后顺序、组合、行不行、生理机制、疲劳原因、训练计划、饮食/营养方案、运动生理学 -> 设置 intent="knowledge"
-            - 用户描述模糊、需要综合理论与实操背景 -> 设置 intent="mixed"
+            - 用户问具体动作“怎么做”、精细发力感 -> 设置 rag_intent="exercise"
+            - 用户问动作先后顺序、组合、行不行、生理机制、疲劳原因、训练计划、饮食/营养方案、运动生理学 -> 设置 rag_intent="knowledge"
+            - 用户描述模糊、需要综合理论与实操背景 -> 设置 rag_intent="mixed"
+            - 【强制】每个 rag_tool 任务必须填写 rag_intent；下游 small planner 会直接沿用，不会二次判 intent。
 
             【任务依赖生成指南 (Topological Dependency Rules)】
             - 默认情况下，所有任务都是【并行的】，它们不互相依赖，`depends_on` 应保持为空数组 `[]`。
             - 【关键串行场景】：当且仅当发生“伤病规避”或“动作切换”需要调用 graph_tool，且同时需要针对用户匹配动作调用 sql_tool 时。
-            - 逻辑如下：graph_tool 为了避免返回成百上千个无关动作导致上下文冗余，【必须】等待 sql_tool 查出候选动作后进行定点裁剪。
             - 在此场景下：
             1. 为 sql_tool 任务赋予固定的标识：`task_id: "task_sql_base"`
             2. 为 graph_tool 任务赋予标识：`task_id: "task_graph_injury"`
@@ -57,38 +42,119 @@ class MacroPlannerAgent:
 
             【严格约束】
             - 此时你只需决定触发哪个工具，不需要提取具体的动作细节参数。
-            - 如果你分析出用户的提问没有提到任何与运动有关的信息，比如动作名、肌肉群、器械、伤病或任何运动学百科全书查询，请绝对不要选装任何工具。将 routing_mode 锁死为 'chat_only'，并保持 selected_tools 为空数组 []。
+            - 如果你分析出用户的提问没有提到任何与运动有关的信息，请绝对不要选装任何工具。将 routing_mode 锁死为 'chat_only'，并保持 selected_tools 为空数组 []。
+            - 若 IntentState 显示 routing_hint=chat_only_candidate 且 fitness_score=0，【必须】输出 chat_only，不得选装工具。
             """
 
-        messages = [{"role": "system", "content": system_prompt}]
 
-        if history_context:
-            messages.extend(history_context)
+def _log_compiled_macro_prompt(
+    messages: list[dict[str, str]],
+    *,
+    planner_context: PlannerContextBundle | None = None,
+    source: str,
+) -> None:
+    """Log the exact messages[] sent to the macro planner LLM."""
+    header = (
+        f"{LogColor.PLAN}[MacroPlanner] Compiled prompt "
+        f"({len(messages)} messages, {source}){LogColor.RESET}"
+    )
+    logger.info(header)
 
-        summary_block = ""
-        if memory.session_summary.strip():
-            summary_block = (
-                f"【本对话较早轮次摘要（warm memory）】:\n"
-                f"{memory.session_summary.strip()}\n\n"
-            )
-
-        user_content = (
-            f"{semantic_constraints}"
-            f"{summary_block}"
-            f"【当前用户的最新发问】：\n\"{user_input}\"\n"
+    if planner_context is not None:
+        logger.info(
+            f"{LogColor.PLAN}[MacroPlanner] Context segments: "
+            f"{planner_context.explain()}{LogColor.RESET}"
+        )
+        logger.info(
+            f"{LogColor.PLAN}[MacroPlanner] Token budget: "
+            f"{planner_context.used_tokens}/{planner_context.budget_max_tokens}"
+            f"{LogColor.RESET}"
         )
 
-        if memory.latest_analyzer_feedback:
-            user_content += (
-                f"【自愈复盘报告 —— 你在上一轮由于调度不当被质检官打回了！】\n"
-                f"- 质检官的反思修正指令: \"{memory.latest_analyzer_feedback}\"\n"
+    for idx, message in enumerate(messages):
+        role = message.get("role", "?")
+        content = message.get("content") or ""
+        if role == "system":
+            preview = content[:160].replace("\n", "\\n")
+            logger.info(
+                f"{LogColor.PLAN}[MacroPlanner] msg[{idx}] role=system "
+                f"len={len(content)} preview={preview!r}…{LogColor.RESET}"
+            )
+            continue
+
+        logger.info(
+            f"{LogColor.PLAN}[MacroPlanner] msg[{idx}] role={role} "
+            f"len={len(content)}{LogColor.RESET}\n{content}"
+        )
+
+
+class MacroPlannerAgent:
+    def __init__(self, client):
+        self.client = client
+
+    async def plan(
+        self,
+        user_input: str,
+        history_context: list,
+        semantic_profile: list[dict[str, any]],
+        memory: WorkingMemory,
+        intent_state: IntentState | None = None,
+        planner_context: PlannerContextBundle | None = None,
+    ) -> MacroPlanSchema:
+        if planner_context is not None:
+            messages = compile_macro_messages(planner_context, MACRO_SYSTEM_PROMPT)
+            _log_compiled_macro_prompt(
+                messages,
+                planner_context=planner_context,
+                source="context_builder",
+            )
+        else:
+            from ..intent.intent_state import format_intent_block
+            from ..memory.state_patch import format_state_patch_block
+
+            semantic_constraints = ""
+            if len(semantic_profile) != 0:
+                profile = semantic_profile[0]
+                semantic_constraints = (
+                    f"【来自图数据库（Neo4j）的当前用户长效硬性指标与物理红线】:\n"
+                    f"- 用户当前体能级别硬钢印: {profile.get('level', 'beginner')}\n"
+                    f"- 用户当前【主诉受损/严禁过度负载】的身体关节: "
+                    f"{', '.join(profile.get('injuries', [])) if profile.get('injuries') else '全身健康无受损'}\n"
+                    f"- 用户家里目前【仅拥有且仅能调遣】的常备训练器械库: "
+                    f"{', '.join(profile.get('equipment_list', [])) if profile.get('equipment_list') else '自重'}\n\n"
+                )
+
+            messages = [{"role": "system", "content": MACRO_SYSTEM_PROMPT}]
+            if history_context:
+                messages.extend(history_context)
+
+            summary_block = ""
+            if memory.session_summary.strip():
+                summary_block = (
+                    f"【本对话较早轮次摘要（warm memory）】:\n"
+                    f"{memory.session_summary.strip()}\n\n"
+                )
+
+            user_content = (
+                f"{semantic_constraints}"
+                f"{format_state_patch_block(memory.state_patch)}"
+                f"{format_intent_block(intent_state) if intent_state else ''}"
+                f"{summary_block}"
+                f"【当前用户的最新发问】：\n\"{user_input}\"\n"
             )
 
-        messages.append({"role": "user", "content": user_content})
-        
+            if memory.latest_analyzer_feedback:
+                user_content += (
+                    f"【自愈复盘报告 —— 你在上一轮由于调度不当被质检官打回了！】\n"
+                    f"- 质检官的反思修正指令: \"{memory.latest_analyzer_feedback}\"\n"
+                )
+
+            messages.append({"role": "user", "content": user_content})
+            _log_compiled_macro_prompt(messages, source="legacy_fallback")
+
         response = self.client.beta.chat.completions.parse(
-            model="gpt-4o", # 涉及复杂规划，建议用强模型
+            model="gpt-4o",
             messages=messages,
-            response_format=MacroPlanSchema
+            response_format=MacroPlanSchema,
         )
         return response.choices[0].message.parsed

@@ -6,14 +6,14 @@ An AI-powered fitness coaching platform that combines multi-agent orchestration 
 
 Coach Agent is a full-stack application:
 
-- **Backend** — A FastAPI service with a multi-agent orchestrator that plans, executes, and synthesizes responses using SQL, RAG, and graph tools.
+- **Backend** — A FastAPI service with unia multi-agent orchestrator that plans, executes, and synthesizes responses using SQL, RAG, and graph tools.
 - **Frontend** — A React chat interface for signup, profile management, and interactive coaching sessions.
 
 The agent retrieves exercises from MySQL, searches fitness knowledge via ChromaDB vector search, and runs injury-aware reasoning over a Neo4j exercise graph — then synthesizes structured coaching responses with exercise recommendations and safety guidance.
 
 ## UI
 
-<img width="1435" height="735" alt="截屏2026-05-28 16 45 25" src="https://github.com/user-attachments/assets/f45b53fb-8ec8-41e6-b9b2-361825f15bc4" />
+
 
 ## Why It's Useful
 
