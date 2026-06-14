@@ -42,6 +42,9 @@ class AgentPlansLog(BaseModel):
     executed_results: str = Field(..., description="ToolExecutor的原始执行结算快照报告数组")
     
     analyzer_final_reason: Optional[str] = Field(None, description="analyzer最后一轮的深度诊断分析")
+    intent_audit: Optional[Dict[str, Any]] = Field(
+        None, description="IntentState / policy_actions / rag lineage 审计快照"
+    )
     created_at: Optional[datetime] = Field(None, description="审计日志物理落盘固化的时间戳")
 
 

@@ -1,10 +1,21 @@
 from pydantic import BaseModel, Field
 from typing import List, Literal, Optional
 
+
 class ChatMessage(BaseModel):
     """单条对话契约"""
     role: str  # "user" 或 "assistant"
     content: str
+
+
+class SessionStatePatch(BaseModel):
+    """Structured warm memory preserved across sliding-window compaction (IC-P1)."""
+
+    user_goal: str = ""
+    open_questions: list[str] = Field(default_factory=list)
+    hard_constraints: list[str] = Field(default_factory=list)
+    active_intent_slots: list[str] = Field(default_factory=list)
+
 
 class WorkingMemory(BaseModel):
     """当前会话的工作记忆完全体模型（绑定 Session 生命周期）"""
@@ -26,6 +37,11 @@ class WorkingMemory(BaseModel):
     # 💡 核心高级特性：状态机自愈状态留存
     current_loop_retry_count: int = Field(0, description="记录当前轮次中，Planner 已经因质检失败重试了多少次")
     latest_analyzer_feedback: str = Field("", description="留存 Analyzer 在上一轮自愈迭代中吐出的具体反思指令")
+
+    state_patch: SessionStatePatch = Field(
+        default_factory=SessionStatePatch,
+        description="滑窗压缩后仍保留的结构化任务状态（IC-P1 warm state patch）",
+    )
     
     def add_message(self, role: str, content: str):
         self.chat_history.append(ChatMessage(role=role, content=content))

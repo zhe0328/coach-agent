@@ -14,6 +14,7 @@ from app.eval.paths import (
     DEFAULT_RAG_DATASET,
     SMOKE_AGENT_DATASET,
     SMOKE_RAG_DATASET,
+    SMOKE_ROUTING_DATASET,
     dataset,
     resolve_dataset,
 )
@@ -27,6 +28,7 @@ class TestEvalPaths:
     def test_smoke_datasets_exist(self):
         assert SMOKE_RAG_DATASET.is_file()
         assert SMOKE_AGENT_DATASET.is_file()
+        assert SMOKE_ROUTING_DATASET.is_file()
 
     def test_dataset_helper(self):
         assert dataset("fitness_ground_truth.json") == DATASET_DIR / "fitness_ground_truth.json"

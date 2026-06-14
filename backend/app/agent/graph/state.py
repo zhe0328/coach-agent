@@ -1,5 +1,7 @@
 from typing import Any, Literal, TypedDict
 
+from app.agent.context.context_builder import PlannerContextBundle
+from app.agent.intent.intent_state import IntentState
 from app.models.memory import WorkingMemory
 from app.models.schema import CoachResponse, FullPlan, MacroPlanSchema
 
@@ -15,7 +17,11 @@ class CoachAgentState(TypedDict, total=False):
     # Loaded context
     memory: WorkingMemory
     history_messages: list[dict[str, str]]
+    planner_history_messages: list[dict[str, str]]
     semantic_profile: list[dict[str, Any]]
+    intent_state: IntentState | None
+    planner_context: PlannerContextBundle | None
+    policy_actions: list[str]
 
     # Planner / execution
     macro_plan: MacroPlanSchema | None

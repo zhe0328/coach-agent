@@ -1,6 +1,7 @@
 import json
 from typing import List, Dict, Any, Tuple
 from pydantic import BaseModel, Field
+from app.agent.policy.routing_keywords import ACTION_KEYWORDS, SAFETY_PHRASES
 from app.agent.utils.logger import logger, LogColor
 
 
@@ -10,8 +11,14 @@ class AnalysisResult(BaseModel):
     feedback: str = Field(..., description="如果未完成或数据发生严重语义/安全错配，请给出具体的、能够指导 Planner 修正方向的反思指令；若完全合格则为空字符串")
 
 
-_ACTION_KEYWORDS = {"练", "推荐", "动作", "计划", "怎么练", "课表"}
-_SAFETY_KEYWORDS = {"痛", "伤", "保护", "难", "易", "换一个", "软绵绵"}
+def _has_action_intent(user_input: str) -> bool:
+    return any(kw in user_input for kw in ACTION_KEYWORDS)
+
+
+def _has_safety_concern(user_input: str) -> bool:
+    if any(p in user_input for p in SAFETY_PHRASES):
+        return True
+    return "痛" in user_input or "伤" in user_input
 
 
 class PlanAnalyzer:
@@ -128,8 +135,8 @@ class PlanAnalyzer:
             return False, "【空数据拦截】：底层没有执行任何工具。请 Planner 至少启动一个核心工具进行数据检索。"
 
         flags = self._scan_tools(tool_results)
-        is_action_query = any(kw in user_input for kw in _ACTION_KEYWORDS)
-        has_safety_concern = any(kw in user_input for kw in _SAFETY_KEYWORDS)
+        is_action_query = _has_action_intent(user_input)
+        has_safety_concern = _has_safety_concern(user_input)
 
         if is_action_query:
             for r in tool_results:
