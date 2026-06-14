@@ -13,7 +13,7 @@ The agent retrieves exercises from MySQL, searches fitness knowledge via ChromaD
 
 ## UI
 
-
+<img width="1435" height="735" alt="截屏2026-05-28 16 45 25" src="https://github.com/user-attachments/assets/f45b53fb-8ec8-41e6-b9b2-361825f15bc4" />
 
 ## Why It's Useful
 
