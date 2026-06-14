@@ -46,14 +46,16 @@ def route_after_analyzer(state: CoachAgentState) -> str:
         )
         return "synthesizer"
 
-    logger.info(f"{prefix} analyzer fail → macro_planner (retry){suffix}")
-    return "macro_planner"
+    logger.info(f"{prefix} analyzer fail → intent_projector (retry){suffix}")
+    return "intent_projector"
 
 
 def build_coach_graph(orchestrator, *, interrupt_before: list[str] | None = None):
     graph = StateGraph(CoachAgentState)
 
     graph.add_node("load_context", orchestrator._node_load_context)
+    graph.add_node("intent_projector", orchestrator._node_intent_projector)
+    graph.add_node("context_builder", orchestrator._node_context_builder)
     graph.add_node("macro_planner", orchestrator._node_macro_planner)
     graph.add_node("small_planner", orchestrator._node_small_planner)
     graph.add_node("tool_execute", orchestrator._node_tool_execute)
@@ -62,7 +64,9 @@ def build_coach_graph(orchestrator, *, interrupt_before: list[str] | None = None
     graph.add_node("persist", orchestrator._node_persist)
 
     graph.set_entry_point("load_context")
-    graph.add_edge("load_context", "macro_planner")
+    graph.add_edge("load_context", "intent_projector")
+    graph.add_edge("intent_projector", "context_builder")
+    graph.add_edge("context_builder", "macro_planner")
 
     graph.add_conditional_edges(
         "macro_planner",
@@ -89,7 +93,7 @@ def build_coach_graph(orchestrator, *, interrupt_before: list[str] | None = None
         "analyzer",
         route_after_analyzer,
         {
-            "macro_planner": "macro_planner",
+            "intent_projector": "intent_projector",
             "synthesizer": "synthesizer",
         },
     )

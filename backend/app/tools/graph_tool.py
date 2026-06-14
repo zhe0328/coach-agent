@@ -438,6 +438,25 @@ class GraphTool:
             logger.error(f"[GraphTool] 后台并发追加器材连线遭遇异常: {e}")
             return False
 
+    async def fetch_joint_exercise_names(self) -> dict[str, list[str]]:
+        """Return exercise names that LOAD each joint (for policy term enrichment)."""
+        cypher = """
+            MATCH (e:Exercise)-[:LOADS]->(j:Joint)
+            RETURN j.name AS joint, collect(DISTINCT e.name) AS exercises
+        """
+
+        def _query(session):
+            result = session.run(cypher)
+            out: dict[str, list[str]] = {}
+            for record in result:
+                joint = record.get("joint")
+                exercises = record.get("exercises") or []
+                if joint:
+                    out[str(joint)] = [str(x) for x in exercises if x]
+            return out
+
+        return await self._run_session(_query)
+
     async def get_all_injury_edges(self):
         cypher_query = """
                 MATCH (ex:Exercise)-[l:LOADS]->(j:Joint)

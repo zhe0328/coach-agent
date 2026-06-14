@@ -43,21 +43,29 @@ jobs:
       - name: Run harness unit tests
         run: |
           export PYTHONPATH=.
-          python -m pytest tests/eval/ -q
+          python -m pytest tests/eval/ tests/agent/test_intent_routing.py tests/agent/test_context_builder.py -q
 
       - name: Validate public smoke datasets
         run: |
           export PYTHONPATH=.
           python - <<'PY'
-          from app.eval.paths import SMOKE_AGENT_DATASET, SMOKE_RAG_DATASET
+          from app.eval.paths import SMOKE_AGENT_DATASET, SMOKE_RAG_DATASET, SMOKE_ROUTING_DATASET
           from app.eval.deepeval_eval import load_agent_dataset
           from app.eval.ragas_eval import load_rag_dataset
+          from app.eval.routing_eval import run_routing_eval
 
           rag_rows = load_rag_dataset(SMOKE_RAG_DATASET)
           agent_rows = load_agent_dataset(SMOKE_AGENT_DATASET)
+          passed, total, reports = run_routing_eval(SMOKE_ROUTING_DATASET)
           assert len(rag_rows) == 3, rag_rows
           assert len(agent_rows) == 3, agent_rows
-          print("Smoke datasets OK:", SMOKE_RAG_DATASET.name, SMOKE_AGENT_DATASET.name)
+          assert passed == total, reports
+          print(
+              "Smoke datasets OK:",
+              SMOKE_RAG_DATASET.name,
+              SMOKE_AGENT_DATASET.name,
+              SMOKE_ROUTING_DATASET.name,
+          )
           PY
 
   eval-smoke:

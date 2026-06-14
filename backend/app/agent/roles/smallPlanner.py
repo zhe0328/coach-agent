@@ -1,14 +1,16 @@
 from app.agent.utils.logger import logger, LogColor
+from app.agent.roles.sql_param_sanitizer import SqlParamCatalog, sanitize_sql_search_params
 from ...models.schema import (
     SQLSearchSchema,
     RAGSearchSchema,
+    RAGQueryExtractSchema,
     GraphReasoningSchema,
     FullPlan,
     ToolTask,
     ToolCallIntent,
     MacroPlanSchema,
 )
-from typing import List
+from typing import List, Literal, Optional
 import asyncio
 
 
@@ -23,7 +25,11 @@ class SmallPlannerAgent:
         self.model = "gpt-4o-mini"  # 选用极速且便宜的模型
 
     async def _extract_sql_params(
-        self, focused_query: str, reason: str
+        self,
+        focused_query: str,
+        reason: str,
+        *,
+        sql_param_catalog: SqlParamCatalog | None = None,
     ) -> SQLSearchSchema:
         """SQL 专项：极端严苛的‘非必要不填充’数据提取"""
         system_prompt = """
@@ -32,19 +38,30 @@ class SmallPlannerAgent:
             【关键准则：非必要不填充】
             - 只有当用户显式提到了某个属性时，才填充对应的参数。
             - 严禁脑补用户没说的信息。如果用户没提部位，该字段必须保持 null（None）。
-            - 严禁将用户提到的“部位”同时填入 name_zh 和 target_zh。
+            - name_zh / body_part_zh / target_zh 三者语义不同，【禁止混填】。
 
-            【字段填充指南】
-            - name_zh: 仅当用户提到具体的动作名称（如“交替触脚跟”、“空中蹬车”）时填写。不要把部位填在这里。
-            - target_zh/body_part_zh: 只有用户明确说了“练哪里”才填。若填写了target_zh, 必须确保 body_part_zh 与其在人类解剖学上【绝对属于同一身体分区】
-            - category_zh: 除非用户明确说“有氧”或“力量”，否则不填。
+            【字段语义（必须严格区分）】
+            - name_zh: 【仅】具体动作名（如「反向卷腹」「波比跳」「罗马尼亚硬拉」）。
+              禁止填：胸/背/腿/核心/胸肌/腹直肌/哑铃 等区域词、肌肉词、器材词。
+            - body_part_zh: 【仅】从枚举中选一个大分区：背部/胸部/肩部/大腿/腰腹/上臂/前臂/小腿/颈部/心脏。
+              用户说「练胸/练背/练核心/练腿」→ 只填 body_part_zh，不要填 target_zh。
+            - target_zh: 【仅】更细的目标肌（如「腹直肌」「胸大肌」「背阔肌」），且用户明确点名该肌肉时才填。
+              若已填 body_part_zh，通常应 leave target_zh 为空，避免 SQL AND 过窄查不到结果。
 
-            【严格约束】
-            - 必须使用中文填充参数。
+            【互斥规则】
+            - 区域意图（练胸、练背、练核心）→ 只填 body_part_zh，target_zh=null，name_zh=null。
+            - 具体动作名 → 只填 name_zh（可附带 equipment/difficulty），不要填 body_part/target。
+            - 禁止 name_zh 与 body_part_zh / target_zh 填同一个词。
+
+            【其他字段】
+            - equipment_zh / difficulty / category_zh: 用户明确提到才填。
 
             【执行范例】
-            - 输入: "初学者弹力带练大腿" -> 输出: {{equipment_zh: "弹力带", body_part_zh: "大腿", difficulty: "beginner"}}
-            - 输入: "锻炼前锯肌的有氧运动" -> 输出: {{targets_zh: "前锯肌", category_zh: "有氧运动"}}
+            - "初学者弹力带练大腿" -> {{equipment_zh: "弹力带", body_part_zh: "大腿", difficulty: "beginner"}}
+            - "advanced 练核心" -> {{body_part_zh: "腰腹", difficulty: "advanced"}}
+            - "前锯肌有氧" -> {{target_zh: "前锯肌", category_zh: "有氧运动"}}
+            - "反向卷腹怎么做" -> {{name_zh: "反向卷腹"}}
+            - 错误示范: name_zh="胸肌" ❌  应改为 body_part_zh="胸部"
         """
 
         user_prompt = f"""
@@ -71,11 +88,24 @@ class SmallPlannerAgent:
                 temperature=0.0,
             )
             parsed = response.choices[0].message.parsed
+            sanitized = sanitize_sql_search_params(
+                parsed,
+                focused_query=focused_query,
+                catalog=sql_param_catalog,
+            )
+            if sanitized.model_dump(exclude_none=True) != parsed.model_dump(
+                exclude_none=True
+            ):
+                logger.info(
+                    f"{LogColor.TOOL}[SmallPlanner][sql_tool] 参数校正 "
+                    f"{parsed.model_dump(exclude_none=True)} -> "
+                    f"{sanitized.model_dump(exclude_none=True)}{LogColor.RESET}"
+                )
             logger.info(
                 f"{LogColor.TOOL}[SmallPlanner][sql_tool] 提取结果 "
-                f"{parsed.model_dump(exclude_none=True)}{LogColor.RESET}"
+                f"{sanitized.model_dump(exclude_none=True)}{LogColor.RESET}"
             )
-            return parsed
+            return sanitized
         except Exception as e:
             logger.error(f"[Extractor] SQL参数提取失败: {e}")
             return SQLSearchSchema()  # 容灾：返回全 null 对象
@@ -126,10 +156,68 @@ class SmallPlannerAgent:
             logger.error(f"[Extractor] Graph参数提取失败: {e}")
             raise e
 
-    async def _extract_rag_params(
+    async def _extract_rag_query_text(
         self, focused_query: str, reason: str
+    ) -> RAGQueryExtractSchema:
+        """Extract RAG query keywords only; intent is owned by macro planner."""
+        system_prompt = """
+            你是一个专业的运动科学RAG提取器。
+            你的唯一职责是将口语化的提问精炼为纯粹的体育科学/动作关键词。
+            不要判断 exercise/knowledge/mixed — 上游 macro planner 已决定检索意图。
+
+            【执行范例】
+            - 输入: "波比跳的执行步骤" -> 输出: {{ "query_text": "波比跳 步骤" }}
+            - 输入: "先做高翻还是先做深蹲？感觉练完软绵绵的" -> 输出: {{ "query_text": "高翻 深蹲 动作顺序 中枢神经疲劳" }}
+        """
+        user_prompt = f"""
+            【上游宏观规划官的决策依据】：
+            {reason}
+
+            【针对本工具裁剪后的纯净提问切片】：
+            "{focused_query}"
+
+            请精炼为高价值检索词：
+        """
+        response = self.client.beta.chat.completions.parse(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            response_format=RAGQueryExtractSchema,
+            temperature=0.0,
+        )
+        return response.choices[0].message.parsed
+
+    async def _extract_rag_params(
+        self,
+        focused_query: str,
+        reason: str,
+        rag_intent: Optional[Literal["exercise", "knowledge", "mixed"]] = None,
     ) -> RAGSearchSchema:
-        """RAG 专项：清洗高频体育实体，并执行意图路由三选一"""
+        """RAG 专项：macro rag_intent 为真源；仅缺失时才由 LLM 判定 intent。"""
+        if rag_intent is not None:
+            try:
+                logger.info(
+                    f"{LogColor.TOOL}[SmallPlanner][rag_tool] 使用 macro rag_intent="
+                    f"{rag_intent!r} focused_query={focused_query!r}{LogColor.RESET}"
+                )
+                extracted = await self._extract_rag_query_text(focused_query, reason)
+                parsed = RAGSearchSchema(
+                    query_text=extracted.query_text,
+                    top_k=extracted.top_k,
+                    intent=rag_intent,
+                )
+                logger.info(
+                    f"{LogColor.TOOL}[SmallPlanner][rag_tool] 提取结果 "
+                    f"{parsed.model_dump(exclude_none=True)}{LogColor.RESET}"
+                )
+                return parsed
+            except Exception as e:
+                logger.error(
+                    f"[Extractor] RAG query 提取失败，回退至完整提取: {e}"
+                )
+
         system_prompt = """
             你是一个专业的运动科学RAG提取器。
             你的唯一职责是将口语化的提问精炼为纯粹的体育科学/动作关键词，并准确判断提问是偏向动作实操（exercise）还是生理机制逻辑（knowledge），还是两者都有（mixed）。
@@ -173,7 +261,10 @@ class SmallPlannerAgent:
             raise e
 
     async def assemble_full_plan(
-        self, macro_plan: MacroPlanSchema
+        self,
+        macro_plan: MacroPlanSchema,
+        *,
+        sql_param_catalog: SqlParamCatalog | None = None,
     ) -> FullPlan:
         """
         核心装配大脑：将宏观意图与微观参数完美焊接，还原并吐出原生的 FullPlan 强类型契约
@@ -199,7 +290,9 @@ class SmallPlannerAgent:
 
             if intent.tool_name == "sql_tool":
                 extract_tasks[t_id] = self._extract_sql_params(
-                    t_focused_query, t_reason
+                    t_focused_query,
+                    t_reason,
+                    sql_param_catalog=sql_param_catalog,
                 )
             elif intent.tool_name == "graph_tool":
                 extract_tasks[t_id] = self._extract_graph_params(
@@ -207,7 +300,7 @@ class SmallPlannerAgent:
                 )
             elif intent.tool_name == "rag_tool":
                 extract_tasks[t_id] = self._extract_rag_params(
-                    t_focused_query, t_reason
+                    t_focused_query, t_reason, intent.rag_intent
                 )
 
         # 3. 秒级并发执行所有提取器（耗时仅由最慢的一个小任务决定）
