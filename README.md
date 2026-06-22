@@ -13,6 +13,8 @@ The agent retrieves exercises from MySQL, searches fitness knowledge via ChromaD
 
 ## UI
 
+<img width="1435" height="735" alt="截屏2026-05-28 16 45 25" src="https://github.com/user-attachments/assets/f45b53fb-8ec8-41e6-b9b2-361825f15bc4" />
+
 ## Why It's Useful
 
 
@@ -162,7 +164,7 @@ coach-agent/
 │   ├── data/
 │   │   ├── coach_agent_db.sql       # MySQL DDL (catalog + users; extend for chat/audit)
 │   │   ├── chroma/                  # Local vector store (generated)
-│   │   └── book_source/             # Fitness textbook source (e.g. CSCS.md)
+│   │   └── book_source/             # Fitness textbook source (e.g. NSCA.md)
 │   ├── scripts/
 │   │   ├── rq_worker.py             # Background job worker
 │   │   ├── sync_to_chroma*.py       # Vector / knowledge ingestion
