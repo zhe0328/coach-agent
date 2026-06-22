@@ -624,7 +624,8 @@ class CoachOrchestrator:
             updates["memory"] = memory
             updates["loop_count"] = loop_count + 1
             logger.warning(
-                "[Orchestrator] 🚨 质检未通过，反馈已写入 Redis，重试 macro_planner"
+                "[Orchestrator] 🚨 质检未通过，反馈已写入 Redis，"
+                "重试 context_builder → macro_planner"
             )
             self._schedule_agent_plan_log({**state, **updates})
 

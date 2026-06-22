@@ -46,8 +46,8 @@ def route_after_analyzer(state: CoachAgentState) -> str:
         )
         return "synthesizer"
 
-    logger.info(f"{prefix} analyzer fail → intent_projector (retry){suffix}")
-    return "intent_projector"
+    logger.info(f"{prefix} analyzer fail → context_builder (retry){suffix}")
+    return "context_builder"
 
 
 def build_coach_graph(orchestrator, *, interrupt_before: list[str] | None = None):
@@ -93,7 +93,7 @@ def build_coach_graph(orchestrator, *, interrupt_before: list[str] | None = None
         "analyzer",
         route_after_analyzer,
         {
-            "intent_projector": "intent_projector",
+            "context_builder": "context_builder",
             "synthesizer": "synthesizer",
         },
     )

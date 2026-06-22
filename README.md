@@ -6,14 +6,12 @@ An AI-powered fitness coaching platform that combines multi-agent orchestration 
 
 Coach Agent is a full-stack application:
 
-- **Backend** — A FastAPI service with unia multi-agent orchestrator that plans, executes, and synthesizes responses using SQL, RAG, and graph tools.
+- **Backend** — A FastAPI service with a LangGraph multi-agent orchestrator that plans, executes, and synthesizes responses using SQL, RAG, and graph tools.
 - **Frontend** — A React chat interface for signup, profile management, and interactive coaching sessions.
 
 The agent retrieves exercises from MySQL, searches fitness knowledge via ChromaDB vector search, and runs injury-aware reasoning over a Neo4j exercise graph — then synthesizes structured coaching responses with exercise recommendations and safety guidance.
 
 ## UI
-
-<img width="1435" height="735" alt="截屏2026-05-28 16 45 25" src="https://github.com/user-attachments/assets/f45b53fb-8ec8-41e6-b9b2-361825f15bc4" />
 
 ## Why It's Useful
 
@@ -30,20 +28,56 @@ The agent retrieves exercises from MySQL, searches fitness knowledge via ChromaD
 
 ## Architecture
 
+Coach Agent uses a **plan–validate–refine** LangGraph pipeline (not open-ended ReAct). One user message runs through intent projection, policy-checked planning, parallel tool execution, optional analyzer retry, synthesis, and durable persistence.
+
+### Runtime harness (L1–L4)
+
+Production behavior is wrapped in a **Runtime Agent Harness** — see `[harness.md](harness.md)` and `[conclusion.md](conclusion.md)` for the full roadmap.
+
+
+| Layer             | Role in this repo                                                            |
+| ----------------- | ---------------------------------------------------------------------------- |
+| **L1 Serving**    | JWT auth, per-session lock (`app/serving/`), Redis RQ background jobs        |
+| **L2 Guardrails** | Policy validators, analyzer loop; input/output guards planned (Phase 3)      |
+| **L3 Agent**      | LangGraph orchestrator, IntentState, three-tier memory, tool contracts       |
+| **L4 Quality**    | `app/eval/harness.py`, DeepEval + Ragas, CI `eval-unit`, baseline regression |
+
+
+### System overview
+
 ```mermaid
-flowchart LR
+flowchart TB
     subgraph Frontend
-        UI[React Chat UI]
+        UI[React ChatDashboard]
     end
 
-    subgraph Backend
-        API[FastAPI]
-        ORCH[Coach Orchestrator]
-        MP[Macro Planner]
-        SP[Small Planner]
-        SYN[Synthesizer]
-        ORCH --> MP --> SP
-        SP --> SYN
+    subgraph L1["L1 Serving"]
+        API[FastAPI + JWT]
+        LOCK[Session lock]
+        RQ[RQ enqueue]
+    end
+
+    subgraph L3["L3 Agent — LangGraph"]
+        LC[load_context]
+        IP[intent_projector]
+        CB[context_builder]
+        MP[macro_planner]
+        PV[policy validators]
+        SP[small_planner]
+        TE[tool_execute]
+        AN[analyzer]
+        SY[synthesizer]
+        PE[persist]
+
+        LC --> IP --> CB --> MP --> PV
+        PV -->|chat_only| SY
+        PV -->|standard| SP --> TE
+        PV -->|planner_offline| TE
+        TE --> AN
+        AN -->|pass| SY
+        AN -->|fail ≤3| CB
+        TE -->|offline/skip| SY
+        SY --> PE
     end
 
     subgraph Tools
@@ -59,52 +93,98 @@ flowchart LR
         REDIS[(Redis)]
     end
 
-    UI --> API --> ORCH
-    ORCH --> SQL --> MYSQL
-    ORCH --> RAG --> CHROMA
-    ORCH --> GRAPH --> NEO4J
-    ORCH --> REDIS
+    subgraph L4["L4 Quality + async"]
+        EVAL[eval harness / CI]
+        WORKER[RQ workers]
+    end
+
+    UI --> API --> LOCK --> LC
+    TE --> SQL --> MYSQL
+    TE --> RAG --> CHROMA
+    TE --> GRAPH --> NEO4J
+    LC --> REDIS
+    PE --> REDIS
+    PE --> RQ --> WORKER
+    WORKER --> MYSQL
+    WORKER --> NEO4J
+    EVAL -.-> L3
 ```
 
 
 
-**Agent flow (simplified):**
+### Agent flow (one turn)
 
-1. Load user semantic profile from Neo4j and session working memory from Redis.
-2. Macro Planner selects tools and builds a dependency graph.
-3. Small Planner fills in typed parameters for each tool call.
-4. Tools run concurrently where possible (with dependency-aware scheduling).
-5. Plan Analyzer validates results; the router retries up to 3 times if data is incomplete.
-6. Synthesizer produces a structured `CoachResponse` (greeting, guidance, exercises, safety alerts).
+1. **L1** — Authenticate JWT; acquire per-`session_id` lock (409 if another turn is in flight).
+2. **load_context** — Load Redis working memory (MySQL backfill on miss); fetch Neo4j semantic profile (injuries, equipment, level).
+3. **intent_projector** — Project structured `IntentState` (slots, `routing_hint`, `rag_intent_hint`) from user input + lexicon.
+4. **context_builder** — Compile prioritized planner context (P0–P3 segments: request, profile, summary, trimmed history).
+5. **macro_planner** — Choose `routing_mode` and tool topology (`standard` / `chat_only` / offline fallback).
+6. **policy validators** — Code-level checks inject `graph_tool` when safety or injury-profile rules require it.
+7. **small_planner** — Fill typed Pydantic params per tool (`SQLSearchSchema`, `RAGSearchSchema`, graph scenarios).
+8. **tool_execute** — Dependency-aware async scheduler (e.g. SQL candidates → graph `injury_avoidance`); tenacity retry + graceful degradation.
+9. **analyzer** — LLM judges completeness/safety; on fail → feedback to Redis → retry from `context_builder` (recompile planner context with P0 feedback; `IntentState` unchanged, max 3).
+10. **synthesizer** — Build structured `CoachResponse` (greeting, guidance, exercises, safety alerts).
+11. **persist** — Append to Redis (4-turn sliding window + summarize-on-prune); enqueue RQ jobs (chat log, training log, consolidation, memory summarize, plan audit).
+
+**Memory tiers:** hot (Redis, last 4 turns) → warm (`session_summary` + `state_patch`) → cold (Neo4j/MySQL profile). Consolidation to Neo4j runs on triggers via RQ, not every turn.
+
+**Sync vs async:** User-facing latency = LangGraph + Redis only. Heavy LLM/DB work (logs, consolidation, summarize) → durable **Redis RQ** queues (`coach_high` / `coach_medium` / `coach_low`) with idempotent job IDs.
 
 ## Project Structure
 
 ```
 coach-agent/
+├── harness.md              # Runtime + Coding harness sprint & roadmap
+├── conclusion.md           # Architecture review & improvement plan
 ├── backend/
 │   ├── app/
-│   │   ├── agent/          # Orchestrator, planners, synthesizer, memory
-│   │   ├── api/            # FastAPI routes
-│   │   ├── database/       # MySQL, Neo4j, ChromaDB clients
-│   │   ├── eval/           # Offline eval harness (RAG + agent suites)
+│   │   ├── agent/
+│   │   │   ├── orchestrator.py      # CoachOrchestrator + graph node handlers
+│   │   │   ├── graph/               # LangGraph state machine (coach_graph.py)
+│   │   │   ├── intent/              # IntentState, FitnessLexicon, projector
+│   │   │   ├── context/             # Context builder, planner history trim
+│   │   │   ├── policy/              # intent_validators, joint-sensitive terms
+│   │   │   ├── memory/              # Working memory, consolidator, summarize
+│   │   │   ├── roles/               # macro/small planners, synthesizer, sanitizer
+│   │   │   ├── prompts/             # system_prompts, skill_guide
+│   │   │   └── analyzer.py
+│   │   ├── api/                     # FastAPI routes + JWT auth
+│   │   ├── serving/                 # L1: session lock (rate limit planned)
+│   │   ├── queue/                   # L1: RQ connection, jobs, enqueue_after_turn
+│   │   ├── eval/                    # L4: harness CLI, Ragas, DeepEval, routing eval
 │   │   │   ├── harness.py
-│   │   │   ├── metrics/    # Shared DeepEval metric definitions
-│   │   │   └── reporters/  # CSV report writers
-│   │   ├── models/         # Pydantic schemas
-│   │   └── tools/          # sql_tool, rag_tool, graph_tool
+│   │   │   ├── datasets/smoke/      # Public smoke JSON (CI + local sanity)
+│   │   │   ├── metrics/             # agent_metrics, tool_trace
+│   │   │   └── reporters/           # baseline, CSV
+│   │   ├── database/                # MySQL, Neo4j, ChromaDB clients
+│   │   ├── models/                  # Pydantic schemas (CoachResponse, memory, fitness)
+│   │   └── tools/                   # sql_tool, rag_tool, graph_tool
 │   ├── data/
-│   │   ├── coach_agent_db.sql   # Database schema
-│   │   ├── chroma/                # Local vector store (generated)
-│   │   └── book_source/           # Fitness textbook source (e.g. CSCS.md)
-│   ├── scripts/            # Data sync and evaluation scripts
-│   ├── tests/              # Agent and RAG quality tests
-│   ├── .env.example        # Environment variable template
+│   │   ├── coach_agent_db.sql       # MySQL DDL (catalog + users; extend for chat/audit)
+│   │   ├── chroma/                  # Local vector store (generated)
+│   │   └── book_source/             # Fitness textbook source (e.g. CSCS.md)
+│   ├── scripts/
+│   │   ├── rq_worker.py             # Background job worker
+│   │   ├── sync_to_chroma*.py       # Vector / knowledge ingestion
+│   │   └── sync_to_neo4j.py
+│   ├── tests/
+│   │   ├── agent/                   # Intent, routing, context, agent quality
+│   │   ├── eval/                    # Harness unit tests (CI eval-unit)
+│   │   ├── memory/                  # Working memory + consolidation
+│   │   ├── queue/                   # enqueue_after_turn, semantic init
+│   │   ├── serving/                 # Session lock tests
+│   │   └── tools/                   # RAG quality, retry resilience
+│   ├── .env.example
 │   └── requirement.txt
 ├── frontend/
-│   └── src/                # React components and API client
+│   └── src/                         # React ChatDashboard, API client (JWT)
+├── .cursor/skills/
+│   └── coach-agent-dev/SKILL.md     # Coding-agent dev guide (Cursor)
 └── .github/
-    └── pull_request_template.md
+    └── workflows/eval.yml           # eval-unit (+ optional eval-smoke)
 ```
+
+**Key docs:** `[harness.md](harness.md)` (active sprint), `[conclusion.md](conclusion.md)` (full harness design). Deeper dev notes: `.cursor/skills/coach-agent-dev/SKILL.md`.
 
 ## Prerequisites
 
