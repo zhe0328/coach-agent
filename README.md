@@ -34,7 +34,7 @@ Coach Agent uses a **plan–validate–refine** LangGraph pipeline (not open-end
 
 ### Runtime harness (L1–L4)
 
-Production behavior is wrapped in a **Runtime Agent Harness** — see `[harness.md](harness.md)` and `[conclusion.md](conclusion.md)` for the full roadmap.
+Production behavior is wrapped in a **Runtime Agent Harness**.
 
 
 | Layer             | Role in this repo                                                            |
@@ -136,8 +136,6 @@ flowchart TB
 
 ```
 coach-agent/
-├── harness.md              # Runtime + Coding harness sprint & roadmap
-├── conclusion.md           # Architecture review & improvement plan
 ├── backend/
 │   ├── app/
 │   │   ├── agent/
@@ -180,13 +178,9 @@ coach-agent/
 │   └── requirement.txt
 ├── frontend/
 │   └── src/                         # React ChatDashboard, API client (JWT)
-├── .cursor/skills/
-│   └── coach-agent-dev/SKILL.md     # Coding-agent dev guide (Cursor)
 └── .github/
     └── workflows/eval.yml           # eval-unit (+ optional eval-smoke)
 ```
-
-**Key docs:** `[harness.md](harness.md)` (active sprint), `[conclusion.md](conclusion.md)` (full harness design). Deeper dev notes: `.cursor/skills/coach-agent-dev/SKILL.md`.
 
 ## Prerequisites
 
