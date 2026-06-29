@@ -9,6 +9,9 @@ from app.agent.policy.routing_keywords import ACTION_KEYWORDS, FITNESS_ENTITY_KE
 if TYPE_CHECKING:
     from app.tools.sql_tool import SQLTool
 
+_cached_lexicon: FitnessLexicon | None = None
+_lexicon_lock = asyncio.Lock()
+
 
 class FitnessLexicon:
     """DB-backed fitness entity dictionary with bootstrap fallback."""
@@ -51,3 +54,16 @@ class FitnessLexicon:
     @property
     def term_count(self) -> int:
         return len(self._terms)
+
+
+async def get_fitness_lexicon(
+    sql_tool: Optional["SQLTool"] = None,
+) -> FitnessLexicon:
+    """Process-level singleton; first load hits SQL, later calls are instant."""
+    global _cached_lexicon
+    if _cached_lexicon is not None:
+        return _cached_lexicon
+    async with _lexicon_lock:
+        if _cached_lexicon is None:
+            _cached_lexicon = await FitnessLexicon.load(sql_tool)
+    return _cached_lexicon

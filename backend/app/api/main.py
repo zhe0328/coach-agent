@@ -2,6 +2,7 @@ from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from contextlib import asynccontextmanager
 from ..tools.sql_tool import SQLTool
 from ..config import get_settings
 from ..agent.orchestrator import CoachOrchestrator
@@ -29,13 +30,29 @@ import bcrypt
 
 settings = get_settings()
 
-app = FastAPI()
-
 client = OpenAI(
     api_key=settings.OPENAI_API_KEY,
     base_url=settings.OPENAI_BASE_URL,
 )
 orchestrator = CoachOrchestrator(client)
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    if settings.STARTUP_WARMUP_ENABLED:
+        try:
+            from ..agent.cache.warmup import warmup_intent_resources
+
+            await warmup_intent_resources(
+                orchestrator.sql_tool,
+                orchestrator.graph_tool,
+            )
+        except Exception as exc:
+            logger.warning(f"{LogColor.PLAN}[Warmup] skipped: {exc}{LogColor.RESET}")
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
 
 sql_tool = SQLTool()
 
@@ -330,22 +347,6 @@ async def get_session_details(
         logger.error(f"API Error fetching session {session_id}: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
-@app.get("/v1/chat/sessions/{user_id}")
-async def get_user_sessions(user_id: str):
-    try:
-        result = await sql_tool.get_user_sessions(user_id)
-        if not result:
-            raise HTTPException(
-                status_code=404, detail=f"User with id {id} not found"
-            )
-
-        return result
-    except Exception as e:
-        print(f"API Error fetching user {user_id}: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
-
-@app.get("/v1/chat/history/{session_id}")
-async def get_session_details(session_id: str):
     try:
         result = await sql_tool.get_session_details(session_id)
         if not result:

@@ -38,6 +38,19 @@ class Settings(BaseSettings):
     SESSION_LOCK_TTL_SECONDS: int = 90
     SESSION_LOCK_RETRY_AFTER_SECONDS: int = 2
 
+    # Neo4j semantic profile cache (load_context)
+    SEMANTIC_PROFILE_CACHE_TTL_SECONDS: int = 600
+
+    # Global joint-term enrichment cache (Neo4j exercise names per joint)
+    JOINT_TERMS_CACHE_TTL_SECONDS: int = 3600
+
+    # Preload lexicon + joint terms on API startup
+    STARTUP_WARMUP_ENABLED: bool = True
+
+    # Macro planner LLM (fast-path skips this when rules match)
+    MACRO_PLANNER_MODEL: str = "gpt-4o-mini"
+    MACRO_PLANNER_MODEL_REPLAN: str = "gpt-4o"
+
     # Offline eval: skip MySQL/Redis/Neo4j writes (reads still allowed)
     EVAL_NO_PERSIST: bool = False
 

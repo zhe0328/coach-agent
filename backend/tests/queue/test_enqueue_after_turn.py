@@ -149,3 +149,25 @@ class TestEnqueueAfterTurn:
 
         plan_log = next(c for c in captured_enqueues if c.func == jobs.agent_plans_log)
         assert plan_log.job_id == "sess-1__3__retry_1__plan_log"
+
+
+class TestEnqueueSniffAfterTurn:
+    def test_enqueues_sniff_job(self, captured_enqueues, monkeypatch):
+        from app.queue.enqueue import enqueue_sniff_after_turn
+
+        enqueue_sniff_after_turn(
+            user_id=7,
+            session_id="sess-1",
+            turn_id=3,
+            user_query="hi",
+            semantic_profile=[],
+        )
+
+        sniff = next(
+            c
+            for c in captured_enqueues
+            if c.func == jobs.sniff_profile_and_maybe_consolidate
+        )
+        assert sniff.job_id == "7__sess-1__3__sniff_profile"
+        assert sniff.queue_name == "coach_medium"
+        assert sniff.kwargs["user_query"] == "hi"

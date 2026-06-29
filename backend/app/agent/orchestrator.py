@@ -1,5 +1,6 @@
 import asyncio
 import json
+import time
 from typing import Any
 
 import httpx
@@ -18,9 +19,13 @@ from .analyzer import PlanAnalyzer
 from .graph.coach_graph import build_coach_graph
 from .graph.state import CoachAgentState
 from .context.context_builder import build_planner_context
+from .cache.intent_resources import prefetch_intent_resources
+from .cache.semantic_profile_cache import fetch_semantic_profile_cached
 from .intent.intent_state import build_planner_history_messages, project_intent
-from .intent.fitness_lexicon import FitnessLexicon
+from .intent.fitness_lexicon import FitnessLexicon, get_fitness_lexicon
 from .policy.joint_term_loader import load_joint_sensitive_terms
+from .analyzer_fast_path import sum_requested_action_counts
+from .macro_planner_fast_path import try_macro_fast_path
 from .memory.memory_consolidator import MemoryConsolidator
 from .memory.state_patch import merge_state_patch_from_intent
 from .memory.memory_manager import WorkingMemoryManager
@@ -35,6 +40,11 @@ from .policy.intent_validators import (
     validate_and_patch_macro_plan,
 )
 from .utils.logger import LogColor, logger
+from .utils.timings import (
+    finalize_turn_timings,
+    log_turn_timings,
+    merge_node_timing,
+)
 from ..config import settings
 from ..models.fitness import ChatRecord, ChatSession, TrainingLog, AgentPlansLog
 from ..models.memory import WorkingMemory
@@ -52,11 +62,64 @@ from ..queue.enqueue import (
     enqueue_after_turn,
     enqueue_agent_plans_log,
     enqueue_consolidation,
+    enqueue_sniff_after_turn,
 )
 from ..serving.session_lock import acquire_session_lock
 from ..tools.graph_tool import GraphTool
 from ..tools.rag_tool import RAGTool
 from ..tools.sql_tool import SQLTool
+
+USER_STATUS_MESSAGES: dict[str, str] = {
+    "preparing": "正在准备你的专属建议…",
+    "planning": "正在分析你的目标并匹配方案…",
+    "refining": "正在优化训练方案…",
+    "writing": "正在撰写训练建议…",
+    "finishing": "正在整理动作细节与安全提示…",
+}
+
+_USER_PHASE_ORDER: dict[str, int] = {
+    "preparing": 0,
+    "planning": 1,
+    "refining": 2,
+    "writing": 3,
+    "finishing": 4,
+}
+
+# Map LangGraph node names → coarse user-facing phases (not exposed verbatim).
+_NODE_USER_PHASE: dict[str, str] = {
+    "load_context": "preparing",
+    "intent_projector": "preparing",
+    "context_builder": "preparing",
+    "macro_planner": "planning",
+    "small_planner": "planning",
+    "tool_execute": "planning",
+    "analyzer": "planning",
+}
+
+
+def _resolve_stream_user_phase(
+    node_name: str,
+    prep_state: CoachAgentState,
+) -> str | None:
+    base = _NODE_USER_PHASE.get(node_name)
+    if base is None:
+        return None
+    if base == "planning" and (prep_state.get("loop_count") or 0) > 0:
+        return "refining"
+    return base
+
+
+def _merge_graph_node_update(
+    state: CoachAgentState,
+    node_name: str,
+    node_update: object,
+) -> CoachAgentState:
+    """Apply one astream(update) payload; skip interrupts and non-dict frames."""
+    if node_name.startswith("__"):
+        return state
+    if not isinstance(node_update, dict):
+        return state
+    return {**state, **node_update}
 
 
 class CoachOrchestrator:
@@ -87,7 +150,7 @@ class CoachOrchestrator:
 
     async def _get_fitness_lexicon(self) -> FitnessLexicon:
         if self._fitness_lexicon is None:
-            self._fitness_lexicon = await FitnessLexicon.load(self.sql_tool)
+            self._fitness_lexicon = await get_fitness_lexicon(self.sql_tool)
         return self._fitness_lexicon
 
     async def _get_sql_param_catalog(self) -> SqlParamCatalog:
@@ -99,6 +162,13 @@ class CoachOrchestrator:
         if self._joint_terms_loaded:
             return
         await load_joint_sensitive_terms(self.graph_tool)
+        self._joint_terms_loaded = True
+
+    async def _prefetch_intent_resources(self) -> None:
+        lexicon, _terms = await prefetch_intent_resources(
+            self.sql_tool, self.graph_tool
+        )
+        self._fitness_lexicon = lexicon
         self._joint_terms_loaded = True
 
     def _build_intent_audit(self, state: CoachAgentState) -> dict[str, Any]:
@@ -126,6 +196,11 @@ class CoachOrchestrator:
                 for t in macro_plan.selected_tools
                 if t.tool_name == "rag_tool"
             ]
+        timings_ms = state.get("timings_ms")
+        if timings_ms:
+            audit["timings_ms"] = timings_ms
+        if state.get("timings_total_ms") is not None:
+            audit["timings_total_ms"] = state["timings_total_ms"]
         return audit
 
     @retry(
@@ -164,6 +239,7 @@ class CoachOrchestrator:
             return {
                 "id": task.task_id,
                 "type": "graph",
+                "scenario": task.graph_params.scenario,
                 "data": await self.graph_tool.reason(task.graph_params),
             }
         return None
@@ -229,33 +305,32 @@ class CoachOrchestrator:
                     dep for dep in task.depends_on if "sql" in dep.lower()
                 ]
                 if task.tool == "graph_tool" and related_sql_ids:
-                    # 1. 捞出最先完成的那个前置 SQL 任务沉淀在共享池里的数据
-                    first_sql_id = related_sql_ids[0]
-                    sql_res = completed_data.get(first_sql_id, [])
-
-                    if isinstance(sql_res, list) and len(sql_res) > 0:
-                        # 2. 健壮提取：不管 MySQL 查出来的是 Pydantic 对象还是字典，统一转化为纯字符串 ID 列表
-                        c_ids = []
+                    c_ids: list[str] = []
+                    seen_candidate_ids: set[str] = set()
+                    for sql_id in related_sql_ids:
+                        sql_res = completed_data.get(sql_id, [])
+                        if not isinstance(sql_res, list):
+                            continue
                         for item in sql_res:
-                            if hasattr(item, "id"):  # 兼容 Pydantic 对象
-                                c_ids.append(str(item.id))
-                            elif (
-                                isinstance(item, dict) and "id" in item
-                            ):  # 兼容原始字典键
-                                c_ids.append(str(item["id"]))
+                            item_id = None
+                            if hasattr(item, "id"):
+                                item_id = str(item.id)
+                            elif isinstance(item, dict) and "id" in item:
+                                item_id = str(item["id"])
+                            if item_id and item_id not in seen_candidate_ids:
+                                seen_candidate_ids.add(item_id)
+                                c_ids.append(item_id)
 
-                        # 3. 强类型合规点语法赋值，彻底杜绝 TypeError
-                        if task.graph_params and hasattr(
-                            task.graph_params, "candidate_ids"
-                        ):
-                            task.graph_params.candidate_ids = (
-                                c_ids  # 👈 修正为点语法赋值
-                            )
-                            logger.info(
-                                f"{LogColor.TOOL}[Scheduler] 🎯 强类型依赖就绪！"
-                                f"成功将 SQL 的 {len(c_ids)} 个候选 ID 热注入至 "
-                                f"【{task.task_id}.graph_params.candidate_ids】{LogColor.RESET}"
-                            )
+                    if c_ids and task.graph_params and hasattr(
+                        task.graph_params, "candidate_ids"
+                    ):
+                        task.graph_params.candidate_ids = c_ids
+                        logger.info(
+                            f"{LogColor.TOOL}[Scheduler] 🎯 强类型依赖就绪！"
+                            f"成功将 {len(related_sql_ids)} 个 SQL 任务的 {len(c_ids)} 个候选 ID "
+                            f"热注入至 【{task.task_id}.graph_params.candidate_ids】"
+                            f"{LogColor.RESET}"
+                        )
 
             # C. 参数就绪，立即投入真正的执行路由
             logger.info(
@@ -313,15 +388,19 @@ class CoachOrchestrator:
 
         return trimmed
 
+    def _fallback_sql_limit(self, user_input: str) -> int:
+        return sum_requested_action_counts(user_input) or 4
+
     def _build_fallback_plans(self, user_input: str) -> tuple[MacroPlanSchema, FullPlan]:
         routing_reason = "远端 Planner 离线，启动本地硬编码全自重安全基础处方调度。"
+        sql_limit = self._fallback_sql_limit(user_input)
         selected_tools = [
             ToolCallIntent(
                 task_id="fallback_task_sql",
                 tool_name="sql_tool",
                 reason="离线容灾：筛选自重安全动作",
                 focused_query=user_input,
-                limit=10,
+                limit=sql_limit,
             ),
             ToolCallIntent(
                 task_id="fallback_task_rag",
@@ -342,7 +421,7 @@ class CoachOrchestrator:
                 ToolTask(
                     task_id="fallback_task_sql",
                     tool="sql_tool",
-                    sql_params=SQLSearchSchema(equipment_zh="自重", limit=10),
+                    sql_params=SQLSearchSchema(equipment_zh="自重", limit=sql_limit),
                     depends_on=[],
                 ),
                 ToolTask(
@@ -434,26 +513,38 @@ class CoachOrchestrator:
     # ── LangGraph nodes ─────────────────────────────────────────────
 
     async def _node_load_context(self, state: CoachAgentState) -> dict:
+        started = time.perf_counter()
+        turn_started = state.get("turn_started_perf") or started
         user_id = state["user_id"]
         session_id = state["session_id"]
 
         if self._eval_no_persist():
             memory = WorkingMemory(session_id=session_id)
+            memory.reset_loop_state()
+            await self._prefetch_intent_resources()
+            semantic_profile: list[dict[str, Any]] = []
         else:
-            await self.sql_tool.create_or_ignore_session(
-                ChatSession(session_id=session_id, user_id=user_id)
+            memory, semantic_profile, (lexicon, _terms), _ = await asyncio.gather(
+                self.memory_manager.get_session_memory(session_id),
+                fetch_semantic_profile_cached(
+                    user_id, self.graph_tool.fetch_user_semantic_memory
+                ),
+                prefetch_intent_resources(self.sql_tool, self.graph_tool),
+                self.sql_tool.create_or_ignore_session(
+                    ChatSession(session_id=session_id, user_id=user_id)
+                ),
             )
-            memory = await self.memory_manager.get_session_memory(session_id)
-        memory.reset_loop_state()
+            self._fitness_lexicon = lexicon
+            self._joint_terms_loaded = True
+            memory.reset_loop_state()
 
-        semantic_profile = await self.graph_tool.fetch_user_semantic_memory(user_id)
         if semantic_profile:
             logger.info(
                 f"[Orchestrator] 🧬 语义记忆: injuries={semantic_profile[0].get('injuries')} "
                 f"equipment={semantic_profile[0].get('equipment_list')}"
             )
 
-        return {
+        updates = {
             "memory": memory,
             "history_messages": self.memory_manager.compile_to_llm_messages(memory),
             "semantic_profile": semantic_profile or [],
@@ -464,9 +555,13 @@ class CoachOrchestrator:
             "is_complete": False,
             "tool_results": [],
             "executed_tasks_snapshot": [],
+            "turn_started_perf": turn_started,
         }
+        updates.update(merge_node_timing(state, "load_context", started))
+        return updates
 
     async def _node_intent_projector(self, state: CoachAgentState) -> dict:
+        started = time.perf_counter()
         memory = state["memory"]
         history_messages = state.get("history_messages") or []
         semantic_profile = state.get("semantic_profile") or []
@@ -490,13 +585,16 @@ class CoachOrchestrator:
             f"rag_hint={intent_state.rag_intent_hint}"
         )
 
-        return {
+        updates = {
             "intent_state": intent_state,
             "planner_history_messages": planner_history,
             "policy_actions": [],
         }
+        updates.update(merge_node_timing(state, "intent_projector", started))
+        return updates
 
     async def _node_context_builder(self, state: CoachAgentState) -> dict:
+        started = time.perf_counter()
         memory = state["memory"]
         planner_context = build_planner_context(
             user_input=state["user_input"],
@@ -510,9 +608,12 @@ class CoachOrchestrator:
             f"used_tokens={planner_context.used_tokens}/"
             f"{planner_context.budget_max_tokens}"
         )
-        return {"planner_context": planner_context}
+        updates = {"planner_context": planner_context}
+        updates.update(merge_node_timing(state, "context_builder", started))
+        return updates
 
     async def _node_macro_planner(self, state: CoachAgentState) -> dict:
+        started = time.perf_counter()
         loop_count = state.get("loop_count", 0)
         logger.info(f"\n--- 🔄 [ReAct 第 {loop_count + 1} 轮] macro_planner ---")
 
@@ -523,57 +624,83 @@ class CoachOrchestrator:
                 selected_tools=[],
                 routing_reason="fitness_score=0 — skipped macro LLM (IC-P1 gate)",
             )
-            return {
+            updates = {
                 "macro_plan": macro_plan,
                 "planner_offline": False,
                 "skip_analyzer": False,
                 "routing_mode": "chat_only",
                 "policy_actions": ["forced_chat_only:fitness_score"],
             }
+            updates.update(merge_node_timing(state, "macro_planner", started))
+            return updates
 
         try:
-            macro_plan = await self.macroPlanner.plan(
-                state["user_input"],
-                state.get("planner_history_messages")
-                or state.get("history_messages")
-                or [],
-                state["semantic_profile"],
-                state["memory"],
-                state.get("intent_state"),
-                state.get("planner_context"),
-            )
-            macro_plan, policy_actions = validate_and_patch_macro_plan(
+            macro_plan = None
+            policy_actions: list[str] = []
+            fast_result = None
+            if loop_count == 0:
+                fast_result = try_macro_fast_path(
+                    state["user_input"],
+                    intent_state,
+                    state.get("semantic_profile"),
+                )
+            if fast_result is not None:
+                macro_plan, fast_reason = fast_result
+                logger.info(
+                    f"{LogColor.PLAN}[MacroPlanner] ⚡ 规则快路径: {fast_reason}"
+                    f"{LogColor.RESET}"
+                )
+                policy_actions.append(f"macro_fast_path:{fast_reason}")
+            else:
+                macro_plan = await self.macroPlanner.plan(
+                    state["user_input"],
+                    state.get("planner_history_messages")
+                    or state.get("history_messages")
+                    or [],
+                    state["semantic_profile"],
+                    state["memory"],
+                    state.get("intent_state"),
+                    state.get("planner_context"),
+                    replan=loop_count > 0,
+                )
+            macro_plan, patch_actions = validate_and_patch_macro_plan(
                 state["user_input"],
                 macro_plan,
                 state.get("semantic_profile"),
                 state.get("intent_state"),
             )
+            policy_actions.extend(patch_actions)
             if policy_actions:
                 logger.warning(
                     f"{LogColor.PLAN}[Planner] Policy patched macro plan: "
                     f"{policy_actions}{LogColor.RESET}"
                 )
-            return {
+            updates = {
                 "macro_plan": macro_plan,
                 "planner_offline": False,
                 "skip_analyzer": False,
                 "routing_mode": macro_plan.routing_mode,
                 "policy_actions": policy_actions,
             }
+            updates.update(merge_node_timing(state, "macro_planner", started))
+            return updates
         except (APIConnectionError, APIStatusError) as err:
             logger.error(
                 f"{LogColor.PLAN}[Planner] 🚨 LLM 离线: {type(err).__name__} → fallback{LogColor.RESET}"
             )
             macro_plan, full_plan = self._build_fallback_plans(state["user_input"])
-            return {
+            updates = {
                 "macro_plan": macro_plan,
                 "full_plan": full_plan,
                 "planner_offline": True,
                 "skip_analyzer": True,
                 "routing_mode": "fallback",
             }
+            updates.update(merge_node_timing(state, "macro_planner", started))
+            return updates
 
     async def _node_small_planner(self, state: CoachAgentState) -> dict:
+        started = time.perf_counter()
         macro_plan = state["macro_plan"]
         sql_param_catalog = await self._get_sql_param_catalog()
         full_plan = await self.smallPlanner.assemble_full_plan(
@@ -584,25 +711,33 @@ class CoachOrchestrator:
             f'{LogColor.PLAN}[Planner] FullPlan: {len(full_plan.tasks)} tasks — '
             f'"{full_plan.logic_chain}"{LogColor.RESET}'
         )
-        return {"full_plan": full_plan}
+        updates = {"full_plan": full_plan}
+        updates.update(merge_node_timing(state, "small_planner", started))
+        return updates
 
     async def _node_tool_execute(self, state: CoachAgentState) -> dict:
+        started = time.perf_counter()
         full_plan = state["full_plan"]
         macro_plan = state["macro_plan"]
 
         if not full_plan or not macro_plan:
-            return {"tool_results": [], "executed_tasks_snapshot": []}
+            updates = {"tool_results": [], "executed_tasks_snapshot": []}
+            updates.update(merge_node_timing(state, "tool_execute", started))
+            return updates
 
         tool_results = await self.run_plan(full_plan)
         executed_tasks_snapshot = self._build_executed_tasks_snapshot(
             macro_plan, full_plan, tool_results
         )
-        return {
+        updates = {
             "tool_results": tool_results,
             "executed_tasks_snapshot": executed_tasks_snapshot,
         }
+        updates.update(merge_node_timing(state, "tool_execute", started))
+        return updates
 
     async def _node_analyzer(self, state: CoachAgentState) -> dict:
+        started = time.perf_counter()
         is_complete, feedback = await self.analyzer.evaluate(
             state["user_input"], state.get("tool_results", [])
         )
@@ -629,9 +764,11 @@ class CoachOrchestrator:
             )
             self._schedule_agent_plan_log({**state, **updates})
 
+        updates.update(merge_node_timing(state, "analyzer", started))
         return updates
 
     async def _node_synthesizer(self, state: CoachAgentState) -> dict:
+        started = time.perf_counter()
         macro_plan = state.get("macro_plan")
         if macro_plan is None:
             macro_plan = MacroPlanSchema(
@@ -657,14 +794,18 @@ class CoachOrchestrator:
                 "为您本地安全离线匹配到如下计划，请参考练习："
             )
 
-        return {"coach_response": coach_response}
+        updates = {"coach_response": coach_response}
+        updates.update(merge_node_timing(state, "synthesizer", started))
+        return updates
 
     async def _node_persist(self, state: CoachAgentState) -> dict:
+        started = time.perf_counter()
         session_id = state["session_id"]
         user_id = state["user_id"]
         user_input = state["user_input"]
         memory = state["memory"]
         coach_response = state.get("coach_response")
+        timing_updates = merge_node_timing(state, "persist", started)
 
         if isinstance(coach_response, CoachResponse):
             full_reply_text = coach_response.model_dump_json()
@@ -692,12 +833,12 @@ class CoachOrchestrator:
                 )
 
                 semantic_profile = state.get("semantic_profile")
-                sniff = await self.memory_consolidator.sniff_delta(
-                    user_id=user_id,
-                    user_query=user_input,
-                    semantic_profile=semantic_profile,
+                turn_started = state.get("turn_started_perf") or started
+                timing_updates.update(
+                    finalize_turn_timings({**state, **timing_updates}, turn_started)
                 )
-                run_consolidation = should_consolidate(memory, sniff=sniff)
+                state_with_timings = {**state, **timing_updates}
+                log_turn_timings(session_id, state_with_timings.get("timings_ms"))
 
                 user_record = ChatRecord(
                     session_id=session_id, role="user", content=user_input
@@ -715,7 +856,7 @@ class CoachOrchestrator:
                     is_completed=0,
                 )
 
-                agent_plans_log = self._build_agent_plans_log(state)
+                agent_plans_log = self._build_agent_plans_log(state_with_timings)
                 turn_range = f"turn_{memory.turn_count}" if pruned else None
                 enqueue_after_turn(
                     AfterTurnPayload(
@@ -725,17 +866,25 @@ class CoachOrchestrator:
                         user_record=user_record,
                         coach_record=coach_record,
                         training_log=training_log,
-                        run_consolidation=run_consolidation,
+                        run_consolidation=False,
                         user_query=user_input,
                         semantic_profile=semantic_profile,
-                        sniff=sniff,
+                        sniff=None,
                         agent_plans_log=agent_plans_log,
                         pruned_messages=pruned or None,
                         turn_range=turn_range,
                     )
                 )
+                enqueue_sniff_after_turn(
+                    user_id=user_id,
+                    session_id=session_id,
+                    turn_id=memory.turn_count,
+                    user_query=user_input,
+                    semantic_profile=semantic_profile,
+                )
 
-        return {"memory": memory}
+        updates = {"memory": memory, **timing_updates}
+        return updates
 
     async def close_session(
         self,
@@ -760,7 +909,9 @@ class CoachOrchestrator:
                 last_user_query = msg.content
                 break
 
-        semantic_profile = await self.graph_tool.fetch_user_semantic_memory(user_id)
+        semantic_profile = await fetch_semantic_profile_cached(
+            user_id, self.graph_tool.fetch_user_semantic_memory
+        )
         sniff = None
         if last_user_query:
             sniff = await self.memory_consolidator.sniff_delta(
@@ -807,7 +958,35 @@ class CoachOrchestrator:
                 "max_loops": 3,
             }
 
-            prep_state = await self._prep_graph.ainvoke(initial_state)
+            yield {
+                "type": "status",
+                "phase": "preparing",
+                "message": USER_STATUS_MESSAGES["preparing"],
+            }
+
+            prep_state: CoachAgentState = dict(initial_state)
+            user_phase = "preparing"
+            async for update in self._prep_graph.astream(
+                initial_state, stream_mode="updates"
+            ):
+                if not isinstance(update, dict):
+                    continue
+                for node_name, node_update in update.items():
+                    prep_state = _merge_graph_node_update(
+                        prep_state, node_name, node_update
+                    )
+                    next_phase = _resolve_stream_user_phase(node_name, prep_state)
+                    if next_phase:
+                        next_rank = _USER_PHASE_ORDER.get(next_phase, 0)
+                        current_rank = _USER_PHASE_ORDER.get(user_phase, 0)
+                        if next_rank > current_rank:
+                            user_phase = next_phase
+                            yield {
+                                "type": "status",
+                                "phase": user_phase,
+                                "message": USER_STATUS_MESSAGES[user_phase],
+                            }
+
             macro_plan = prep_state.get("macro_plan")
             if macro_plan is None:
                 macro_plan = MacroPlanSchema(
@@ -817,8 +996,19 @@ class CoachOrchestrator:
                 )
 
             executed_tasks = prep_state.get("executed_tasks_snapshot") or []
+            selected_tools = [
+                intent.tool_name for intent in macro_plan.selected_tools
+            ]
+            yield {
+                "type": "status",
+                "phase": "writing",
+                "message": USER_STATUS_MESSAGES["writing"],
+                "selected_tools": selected_tools,
+            }
+
             guidance_parts: list[str] = []
 
+            stream_started = time.perf_counter()
             async for chunk in self.synthesizer.stream_guidance(
                 user_input=user_input,
                 macro_plan=macro_plan,
@@ -826,13 +1016,37 @@ class CoachOrchestrator:
             ):
                 guidance_parts.append(chunk)
                 yield {"type": "chunk", "content": chunk}
+            prep_state = {
+                **prep_state,
+                **merge_node_timing(prep_state, "stream_guidance", stream_started),
+            }
 
-            coach_response = self.synthesizer.build_response_from_guidance(
-                guidance_text="".join(guidance_parts),
+            guidance_text = "".join(guidance_parts)
+            yield {
+                "type": "status",
+                "phase": "finishing",
+                "message": USER_STATUS_MESSAGES["finishing"],
+            }
+            enrich_started = time.perf_counter()
+            coach_response = await self.synthesizer.enrich_metadata(
+                guidance_text=guidance_text,
+                user_input=user_input,
                 macro_plan=macro_plan,
                 executed_tasks=executed_tasks,
             )
-            await self._node_persist({**prep_state, "coach_response": coach_response})
+            prep_state = {
+                **prep_state,
+                **merge_node_timing(prep_state, "enrich_metadata", enrich_started),
+            }
+
+            metadata_payload = coach_response.model_dump()
+            metadata_payload.pop("detailed_guidance", None)
+            yield {"type": "metadata", "data": metadata_payload}
+
+            persist_result = await self._node_persist(
+                {**prep_state, "coach_response": coach_response}
+            )
+            prep_state = {**prep_state, **persist_result}
             yield {"type": "done", "data": coach_response.model_dump()}
 
     async def execute(

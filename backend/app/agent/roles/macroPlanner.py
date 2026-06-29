@@ -1,4 +1,5 @@
 from app.models.memory import WorkingMemory
+from ...config import settings
 from ...models.schema import MacroPlanSchema
 from ..context.context_builder import PlannerContextBundle, compile_macro_messages
 from ..intent.intent_state import IntentState
@@ -29,12 +30,12 @@ MACRO_SYSTEM_PROMPT = """你是一个专业的健身训练调度员（Macro Plan
 
             【任务依赖生成指南 (Topological Dependency Rules)】
             - 默认情况下，所有任务都是【并行的】，它们不互相依赖，`depends_on` 应保持为空数组 `[]`。
-            - 【关键串行场景】：当且仅当发生“伤病规避”或“动作切换”需要调用 graph_tool，且同时需要针对用户匹配动作调用 sql_tool 时。
-            - 在此场景下：
-            1. 为 sql_tool 任务赋予固定的标识：`task_id: "task_sql_base"`
-            2. 为 graph_tool 任务赋予标识：`task_id: "task_graph_injury"`
-            3. 【强行约束】：必须将 graph_tool 的 `depends_on` 字段声明为 `["task_sql_base"]`。
-
+            - 【task_id 唯一铁律】：本轮 `selected_tools` 中每个实例的 `task_id` 必须全局唯一，禁止复用。
+              建议语义化命名，例如 `task_sql_back`、`task_sql_glute`、`task_graph_injury`、`task_rag_query`。
+            - 【关键串行场景】：当 graph_tool 需要基于 sql_tool 查出的候选动作做伤病裁剪或进退阶推理时：
+              1. graph_tool 的 `depends_on` 必须列出【本轮全部】sql_tool 的 `task_id`（多个 SQL 就写多个，不要只写一个）。
+              2. 仅有 1 个 SQL 时，可使用 `task_sql_base`；有多个 SQL 时禁止使用同一个 `task_sql_base` 重复命名。
+            
             【组合策略】
             - 用户搜动作 + 问做法：SQL_tool + rag_tool。
             - 用户有伤病 + 搜动作：graph_tool + SQL_tool。
@@ -100,6 +101,8 @@ class MacroPlannerAgent:
         memory: WorkingMemory,
         intent_state: IntentState | None = None,
         planner_context: PlannerContextBundle | None = None,
+        *,
+        replan: bool = False,
     ) -> MacroPlanSchema:
         if planner_context is not None:
             messages = compile_macro_messages(planner_context, MACRO_SYSTEM_PROMPT)
@@ -152,8 +155,11 @@ class MacroPlannerAgent:
             messages.append({"role": "user", "content": user_content})
             _log_compiled_macro_prompt(messages, source="legacy_fallback")
 
+        model = (
+            settings.MACRO_PLANNER_MODEL_REPLAN if replan else settings.MACRO_PLANNER_MODEL
+        )
         response = self.client.beta.chat.completions.parse(
-            model="gpt-4o",
+            model=model,
             messages=messages,
             response_format=MacroPlanSchema,
         )

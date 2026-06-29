@@ -26,6 +26,39 @@ const ERROR_RESPONSE = {
   exercises: [],
 };
 
+const COACH_STREAM_PLACEHOLDER = {
+  greeting: "",
+  detailed_guidance: "",
+  response_type: "knowledge",
+  safety_alerts: [],
+  exercises: [],
+  summary: "",
+};
+
+/** DevTools → Console：发消息后看 [CoachResponse] 分组日志 */
+function logCoachResponse(label, payload) {
+  const exercises = payload?.exercises ?? [];
+  console.group(`[CoachResponse] ${label}`);
+  console.log("exercises.length:", exercises.length);
+  console.log(
+    "exercises:",
+    exercises.map((e) => ({ id: e.id, name_zh: e.name_zh })),
+  );
+  console.log("response_type:", payload?.response_type);
+  console.log("selected_tools:", payload?.selected_tools);
+  console.log("full payload:", payload);
+  console.groupEnd();
+}
+
+/** Monotonic — never regress prep UI to an earlier phase. */
+const PIPELINE_PHASE_RANK = {
+  preparing: 0,
+  planning: 1,
+  refining: 2,
+  writing: 3,
+  finishing: 4,
+};
+
 function normalizeHistoryRecord(row) {
   const role = row.role === "assistant" ? "coach" : "user";
 
@@ -228,37 +261,113 @@ export default function ChatDashboard({ userId }) {
     }
 
     const userMsg = { id: Date.now(), role: "user", content: text };
-    setMessages((prev) => [...prev, userMsg]);
+    const coachMsgId = Date.now() + 1;
+    const coachPlaceholder = {
+      id: coachMsgId,
+      role: "coach",
+      streaming: true,
+      enriching: false,
+      pipelineStatus: "正在准备你的专属建议…",
+      pipelinePhase: "preparing",
+      content: { ...COACH_STREAM_PLACEHOLDER },
+    };
+
+    setMessages((prev) => [...prev, userMsg, coachPlaceholder]);
     setIsLoading(true);
 
     try {
-      const responseStr = await exerciseApi.getAiRecommendation(
-        sessionId,
-        userId,
-        text,
-      );
-
-      const data =
-        typeof responseStr === "string" ? JSON.parse(responseStr) : responseStr;
-      if (!data || typeof data !== "object") {
-        throw new Error("后端返回的 CoachResponse 结构体破损");
-      }
-
-      setMessages((prev) => [
-        ...prev,
-        { id: Date.now() + 1, role: "coach", content: data },
-      ]);
-
-      updateSessionPreview(
-        sessionId,
-        data.summary || data.detailed_guidance || text,
-      );
+      await exerciseApi.streamChat(sessionId, userId, text, {
+        onStatus: (event) => {
+          setMessages((prev) =>
+            prev.map((m) => {
+              if (m.id !== coachMsgId) return m;
+              if (m.content.detailed_guidance?.trim()) {
+                return m;
+              }
+              const nextRank = PIPELINE_PHASE_RANK[event.phase] ?? 0;
+              const curRank = PIPELINE_PHASE_RANK[m.pipelinePhase] ?? 0;
+              if (nextRank < curRank) {
+                return m;
+              }
+              const enriching =
+                event.phase === "finishing" ? true : m.enriching;
+              return {
+                ...m,
+                enriching,
+                pipelineStatus: event.message || m.pipelineStatus,
+                pipelinePhase: event.phase || m.pipelinePhase,
+              };
+            }),
+          );
+        },
+        onChunk: (chunk) => {
+          setMessages((prev) =>
+            prev.map((m) => {
+              if (m.id !== coachMsgId) return m;
+              const prior = m.content.detailed_guidance || "";
+              return {
+                ...m,
+                pipelineStatus: "",
+                pipelinePhase: "writing",
+                content: {
+                  ...m.content,
+                  detailed_guidance: prior + chunk,
+                },
+              };
+            }),
+          );
+        },
+        onMetadata: (metadata) => {
+          logCoachResponse("metadata (SSE 先到)", metadata);
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === coachMsgId
+                ? {
+                    ...m,
+                    enriching: true,
+                    pipelineStatus: "",
+                    content: { ...m.content, ...metadata },
+                  }
+                : m,
+            ),
+          );
+        },
+        onDone: (data) => {
+          logCoachResponse("done (最终 CoachResponse)", data);
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === coachMsgId
+                ? {
+                    ...m,
+                    streaming: false,
+                    enriching: false,
+                    pipelineStatus: "",
+                    pipelinePhase: "",
+                    content: data,
+                  }
+                : m,
+            ),
+          );
+          updateSessionPreview(
+            sessionId,
+            data.summary || data.detailed_guidance || text,
+          );
+        },
+      });
     } catch (error) {
       console.error("Chat Error:", error);
-      setMessages((prev) => [
-        ...prev,
-        { id: Date.now() + 1, role: "coach", content: ERROR_RESPONSE },
-      ]);
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === coachMsgId
+            ? {
+                ...m,
+                streaming: false,
+                enriching: false,
+                content: ERROR_RESPONSE,
+              }
+            : m,
+        ),
+      );
     } finally {
       setIsLoading(false);
     }
@@ -310,7 +419,7 @@ export default function ChatDashboard({ userId }) {
               message={msg}
             />
           ))}
-          {isLoading && <TypingIndicator />}
+          {isLoading && !messages.some((m) => m.streaming) && <TypingIndicator />}
           <div ref={bottomRef} />
         </div>
 

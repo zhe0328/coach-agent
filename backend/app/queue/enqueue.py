@@ -171,6 +171,30 @@ def enqueue_after_turn(payload: AfterTurnPayload) -> list[str]:
     return enqueued
 
 
+def enqueue_sniff_after_turn(
+    *,
+    user_id: int,
+    session_id: str,
+    turn_id: int,
+    user_query: str,
+    semantic_profile: list[dict[str, Any]] | None,
+) -> str | None:
+    """Run sniff_delta off the request hot path; may trigger consolidation."""
+    return _enqueue(
+        QUEUE_MEDIUM,
+        jobs.sniff_profile_and_maybe_consolidate,
+        job_id=f"{user_id}__{session_id}__{turn_id}__sniff_profile",
+        kwargs={
+            "user_id": user_id,
+            "session_id": session_id,
+            "turn_id": turn_id,
+            "user_query": user_query,
+            "semantic_profile": semantic_profile,
+        },
+        retry=Retry(max=2, interval=[20, 60]),
+    )
+
+
 def enqueue_agent_plans_log(
     agent_plans_log: AgentPlansLog,
     *,
