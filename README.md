@@ -24,7 +24,9 @@ The agent retrieves exercises from MySQL, searches fitness knowledge via ChromaD
 | **Injury-aware recommendations** | Graph tool filters or substitutes exercises based on joint load and user injury profile                      |
 | **Personalized coaching**        | User profiles (level, goals, equipment, injuries) persist in MySQL and Neo4j semantic memory                 |
 | **Session memory**               | Redis-backed working memory keeps multi-turn conversations coherent                                          |
-| **Streaming responses**          | SSE endpoint reduces time-to-first-token for a smoother chat experience                                      |
+| **Streaming responses**          | Phased SSE (`status` → `chunk` → `metadata` → `done`) with typewriter UX reduces perceived latency           |
+| **Latency fast paths**           | Rule-based macro/analyzer skips LLM when routing and tool data are clearly sufficient                        |
+| **Context caching**              | Parallel `load_context`, Redis semantic-profile cache, startup + login warmup via RQ workers                   |
 | **Quality evaluation**           | DeepEval and pytest suites for agent trajectory and RAG retrieval quality                                    |
 
 
@@ -40,7 +42,7 @@ Production behavior is wrapped in a **Runtime Agent Harness**.
 | Layer             | Role in this repo                                                            |
 | ----------------- | ---------------------------------------------------------------------------- |
 | **L1 Serving**    | JWT auth, per-session lock (`app/serving/`), Redis RQ background jobs        |
-| **L2 Guardrails** | Policy validators, analyzer loop; input/output guards planned (Phase 3)      |
+| **L2 Guardrails** | Policy validators, analyzer loop + fast-path checks; unique `task_id` enforcement for multi-SQL plans |
 | **L3 Agent**      | LangGraph orchestrator, IntentState, three-tier memory, tool contracts       |
 | **L4 Quality**    | `app/eval/harness.py`, DeepEval + Ragas, CI `eval-unit`, baseline regression |
 
@@ -117,20 +119,24 @@ flowchart TB
 ### Agent flow (one turn)
 
 1. **L1** — Authenticate JWT; acquire per-`session_id` lock (409 if another turn is in flight).
-2. **load_context** — Load Redis working memory (MySQL backfill on miss); fetch Neo4j semantic profile (injuries, equipment, level).
+2. **load_context** — **Parallel** Redis working memory (MySQL backfill on miss), Neo4j semantic profile (Redis cache), intent-resource prefetch (lexicon + joint terms), and session row creation.
 3. **intent_projector** — Project structured `IntentState` (slots, `routing_hint`, `rag_intent_hint`) from user input + lexicon.
 4. **context_builder** — Compile prioritized planner context (P0–P3 segments: request, profile, summary, trimmed history).
-5. **macro_planner** — Choose `routing_mode` and tool topology (`standard` / `chat_only` / offline fallback).
-6. **policy validators** — Code-level checks inject `graph_tool` when safety or injury-profile rules require it.
-7. **small_planner** — Fill typed Pydantic params per tool (`SQLSearchSchema`, `RAGSearchSchema`, graph scenarios).
-8. **tool_execute** — Dependency-aware async scheduler (e.g. SQL candidates → graph `injury_avoidance`); tenacity retry + graceful degradation.
-9. **analyzer** — LLM judges completeness/safety; on fail → feedback to Redis → retry from `context_builder` (recompile planner context with P0 feedback; `IntentState` unchanged, max 3).
-10. **synthesizer** — Build structured `CoachResponse` (greeting, guidance, exercises, safety alerts).
+5. **macro_planner** — Choose `routing_mode` and tool topology; **macro fast path** skips LLM for simple single-slot routing (~0 ms).
+6. **policy validators** — Code-level checks inject `graph_tool` when safety rules require it; **dedupe `task_id`** and expand graph `depends_on` for multi-SQL plans.
+7. **small_planner** — Fill typed Pydantic params per tool; extracts run **per task index** (no `task_id` collision).
+8. **tool_execute** — Dependency-aware async scheduler; merges **all** SQL candidate IDs into graph tasks when multiple SQL tasks exist.
+9. **analyzer** — **Fast path** skips LLM when per-task SQL counts and graph payload shapes match the scenario; otherwise LLM review → retry from `context_builder` (max 3).
+10. **synthesizer** — **Two-phase**: stream `detailed_guidance` first (`chunk` SSE), then rule-based exercises/references + mini-LLM enrich (`metadata` / `done` SSE). Per-SQL-task exercise limits (e.g. 3 back + 3 glutes → 6 cards).
 11. **persist** — Append to Redis (4-turn sliding window + summarize-on-prune); enqueue RQ jobs (chat log, training log, consolidation, memory summarize, plan audit).
 
-**Memory tiers:** hot (Redis, last 4 turns) → warm (`session_summary` + `state_patch`) → cold (Neo4j/MySQL profile). Consolidation to Neo4j runs on triggers via RQ, not every turn.
+**Streaming phases** (monotonic UI status): `preparing` → `planning` → `refining` (analyzer retry) → `writing` → `finishing`.
 
-**Sync vs async:** User-facing latency = LangGraph + Redis only. Heavy LLM/DB work (logs, consolidation, summarize) → durable **Redis RQ** queues (`coach_high` / `coach_medium` / `coach_low`) with idempotent job IDs.
+**Memory tiers:** hot (Redis, last 4 turns) → warm (`session_summary` + `state_patch`) → cold (Neo4j/MySQL profile, **Redis-cached** per user). Consolidation to Neo4j runs on triggers via RQ, not every turn.
+
+**Warmup:** API startup preloads global lexicon + joint terms. **Login** and **`POST /v1/user/warmup`** enqueue per-user semantic-profile cache jobs (`QUEUE_MEDIUM`). Profile update **primes** Redis immediately, then syncs Neo4j via RQ.
+
+**Sync vs async:** User-facing latency = LangGraph + Redis only. Heavy LLM/DB work (logs, consolidation, summarize, cache warmup) → durable **Redis RQ** queues (`coach_high` / `coach_medium` / `coach_low`) with idempotent job IDs.
 
 ## Project Structure
 
@@ -139,7 +145,10 @@ coach-agent/
 ├── backend/
 │   ├── app/
 │   │   ├── agent/
-│   │   │   ├── orchestrator.py      # CoachOrchestrator + graph node handlers
+│   │   │   ├── orchestrator.py      # CoachOrchestrator + graph node handlers + SSE stream
+│   │   │   ├── analyzer_fast_path.py
+│   │   │   ├── macro_planner_fast_path.py
+│   │   │   ├── cache/               # Semantic profile, joint terms, intent warmup
 │   │   │   ├── graph/               # LangGraph state machine (coach_graph.py)
 │   │   │   ├── intent/              # IntentState, FitnessLexicon, projector
 │   │   │   ├── context/             # Context builder, planner history trim
@@ -147,10 +156,11 @@ coach-agent/
 │   │   │   ├── memory/              # Working memory, consolidator, summarize
 │   │   │   ├── roles/               # macro/small planners, synthesizer, sanitizer
 │   │   │   ├── prompts/             # system_prompts, skill_guide
+│   │   │   ├── utils/timings.py     # Per-node latency breakdown logs
 │   │   │   └── analyzer.py
 │   │   ├── api/                     # FastAPI routes + JWT auth
 │   │   ├── serving/                 # L1: session lock (rate limit planned)
-│   │   ├── queue/                   # L1: RQ connection, jobs, enqueue_after_turn
+│   │   ├── queue/                   # L1: RQ connection, jobs, enqueue_after_turn, user warmup
 │   │   ├── eval/                    # L4: harness CLI, Ragas, DeepEval, routing eval
 │   │   │   ├── harness.py
 │   │   │   ├── datasets/smoke/      # Public smoke JSON (CI + local sanity)
@@ -168,7 +178,7 @@ coach-agent/
 │   │   ├── sync_to_chroma*.py       # Vector / knowledge ingestion
 │   │   └── sync_to_neo4j.py
 │   ├── tests/
-│   │   ├── agent/                   # Intent, routing, context, agent quality
+│   │   ├── agent/                   # Intent, routing, context, fast paths, synthesizer enrich
 │   │   ├── eval/                    # Harness unit tests (CI eval-unit)
 │   │   ├── memory/                  # Working memory + consolidation
 │   │   ├── queue/                   # enqueue_after_turn, semantic init
@@ -177,7 +187,7 @@ coach-agent/
 │   ├── .env.example
 │   └── requirement.txt
 ├── frontend/
-│   └── src/                         # React ChatDashboard, API client (JWT)
+│   └── src/                         # React ChatDashboard, SSE client, useTypewriter hook
 └── .github/
     └── workflows/eval.yml           # eval-unit (+ optional eval-smoke)
 ```
@@ -227,12 +237,24 @@ python scripts/sync_to_chroma_knowledge.py    # Book knowledge → ChromaDB
 python scripts/sync_to_neo4j.py               # Exercise graph → Neo4j
 ```
 
-### 4. Start the backend
+### 4. Start the backend and worker
+
+Terminal 1 — API (preloads lexicon + joint terms on startup when `STARTUP_WARMUP_ENABLED=true`):
 
 ```bash
 cd backend
 source venv/bin/activate
+export PYTHONPATH=.
 uvicorn app.api.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+Terminal 2 — **RQ worker** (required for chat logs, consolidation, login/profile cache warmup):
+
+```bash
+cd backend
+source venv/bin/activate
+export PYTHONPATH=.
+python scripts/rq_worker.py
 ```
 
 API docs are available at [http://localhost:8000/docs](http://localhost:8000/docs).
@@ -251,9 +273,12 @@ The app runs at [http://localhost:3000](http://localhost:3000). The API client p
 
 ### Chat with the coach (non-streaming)
 
+Requires JWT from login/signup.
+
 ```bash
 curl -X POST http://localhost:8000/v1/chat/static \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
   -d '{
     "session_id": "550e8400-e29b-41d4-a716-446655440000",
     "user_id": 1,
@@ -263,11 +288,30 @@ curl -X POST http://localhost:8000/v1/chat/static \
 
 ### Streaming chat (SSE)
 
+Requires JWT (`Authorization: Bearer <token>` from login/signup).
+
 ```bash
 curl -N -X POST http://localhost:8000/v1/chat \
   -H "Content-Type: application/json" \
-  -d '{"message": "Recommend a beginner chest workout with dumbbells"}'
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -d '{
+    "session_id": "550e8400-e29b-41d4-a716-446655440000",
+    "user_id": 1,
+    "message": "Recommend 3 back and 3 glute exercises"
+  }'
 ```
+
+**SSE event types** (each line is `data: <json>`):
+
+| `type`     | Payload | When |
+| ---------- | ------- | ---- |
+| `status`   | `phase`, `message` | Coarse pipeline phase (`preparing` … `finishing`) |
+| `chunk`    | `content` | Streaming `detailed_guidance` tokens |
+| `metadata` | `data` (no `detailed_guidance`) | Greeting, exercises, safety alerts early |
+| `done`     | `data` (full `CoachResponse`) | Final structured response |
+| `error`    | `detail`, `code` | Session lock or server error |
+
+Stream ends with `data: [DONE]`.
 
 ### Get exercise details
 
@@ -298,13 +342,26 @@ curl -X POST http://localhost:8000/v1/user/signup \
 
 | Method | Endpoint                  | Description                             |
 | ------ | ------------------------- | --------------------------------------- |
-| `POST` | `/v1/chat`                | Streaming coach response (SSE)          |
-| `POST` | `/v1/chat/static`         | Full coach response (JSON)              |
+| `POST` | `/v1/chat`                | Streaming coach response (SSE, JWT)     |
+| `POST` | `/v1/chat/static`         | Full coach response (JSON, JWT)         |
 | `GET`  | `/v1/exercises/{id}`      | Exercise detail by ID                   |
 | `POST` | `/v1/user/signup`         | Register and initialize profile         |
-| `POST` | `/v1/user/login`          | Authenticate user                       |
+| `POST` | `/v1/user/login`          | Authenticate user (enqueues cache warmup) |
+| `POST` | `/v1/user/warmup`         | Enqueue semantic-profile cache warmup (JWT) |
 | `GET`  | `/v1/user/profile/{id}`   | Fetch user profile                      |
-| `POST` | `/v1/user/profile/update` | Update profile and sync semantic memory |
+| `POST` | `/v1/user/profile/update` | Update profile; prime Redis + Neo4j sync via RQ |
+
+### Latency-related configuration (`.env`)
+
+| Variable | Default | Purpose |
+| -------- | ------- | ------- |
+| `SEMANTIC_PROFILE_CACHE_TTL_SECONDS` | `600` | Redis TTL for Neo4j user profile |
+| `JOINT_TERMS_CACHE_TTL_SECONDS` | `3600` | Redis TTL for joint-sensitive exercise terms |
+| `STARTUP_WARMUP_ENABLED` | `true` | Preload lexicon + joint terms on API boot |
+| `LOGIN_WARMUP_ENABLED` | `true` | Enqueue per-user profile warmup on login |
+| `MACRO_PLANNER_MODEL` | `gpt-4o-mini` | Macro planner (first turn) |
+| `MACRO_PLANNER_MODEL_REPLAN` | `gpt-4o` | Macro planner on analyzer retry |
+| `QUEUE_ENABLED` | `true` | Use Redis RQ; if `false`, warmup runs inline in API process |
 
 
 For request/response schemas, see the interactive docs at `/docs` or `backend/app/models/schema.py`.
@@ -383,6 +440,12 @@ pytest tests/eval/test_harness.py -v
 ### Pytest suites
 
 ```bash
+# Fast paths and caching
+pytest tests/agent/test_macro_planner_fast_path.py tests/agent/test_analyzer_fast_path.py -v
+pytest tests/agent/test_semantic_profile_cache.py tests/agent/test_load_context_parallel.py -v
+pytest tests/agent/test_synthesizer_enrich.py tests/agent/test_intent_validators.py -v
+pytest tests/queue/test_enqueue_user_warmup.py tests/queue/test_enqueue_user_semantic.py -v
+
 # RAG retrieval (delegates to harness runner)
 pytest tests/tools/test_rag_quality.py -v
 
