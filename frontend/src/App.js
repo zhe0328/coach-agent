@@ -4,6 +4,7 @@ import Signup from "./components/Signup";
 import Profile from "./components/Profile";
 import ChatDashboard from "./components/ChatDashboard";
 import { clearAuthSession, setUnauthorizedHandler } from "./api/authSession";
+import { exerciseApi } from "./api/exercise";
 import "./App.css";
 
 export default function App() {
@@ -32,6 +33,11 @@ export default function App() {
       setUsername(null);
     }
   }, []);
+
+  useEffect(() => {
+    if (!userId || !localStorage.getItem("access_token")) return;
+    exerciseApi.warmupUserContext();
+  }, [userId]);
 
   const handleAuthSuccess = (id, name) => {
     localStorage.removeItem("current_fitness_session_id");

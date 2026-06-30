@@ -15,7 +15,7 @@ from ..models.schema import (
     UserLoginRequest,
 )
 from ..agent.utils.logger import logger, LogColor
-from ..queue.enqueue import enqueue_user_semantic_init
+from ..queue.enqueue import enqueue_user_context_warmup, enqueue_user_semantic_init
 from ..serving.session_lock import SessionLockNotAcquired, is_session_locked
 from .auth import (
     TokenPayload,
@@ -35,6 +35,34 @@ client = OpenAI(
     base_url=settings.OPENAI_BASE_URL,
 )
 orchestrator = CoachOrchestrator(client)
+
+
+async def _warmup_user_context_inline(user_id: int) -> None:
+    """Fallback when RQ is disabled (local dev without worker)."""
+    if not settings.LOGIN_WARMUP_ENABLED:
+        return
+    try:
+        from ..agent.cache.warmup import warmup_user_context
+
+        await warmup_user_context(
+            user_id,
+            orchestrator.graph_tool,
+            orchestrator.sql_tool,
+        )
+    except Exception as exc:
+        logger.warning(
+            f"{LogColor.PLAN}[Warmup] user context skipped user_id={user_id}: {exc}"
+            f"{LogColor.RESET}"
+        )
+
+
+async def request_user_context_warmup(user_id: int) -> None:
+    if not settings.LOGIN_WARMUP_ENABLED:
+        return
+    if settings.QUEUE_ENABLED:
+        enqueue_user_context_warmup(user_id)
+    else:
+        await _warmup_user_context_inline(user_id)
 
 
 @asynccontextmanager
@@ -215,12 +243,22 @@ async def login(request: UserLoginRequest):
         f"✅ [AuthAPI] 账户 '{request.username}' (ID: {db_user_id}) 鉴权通过。"
     )
     token = create_access_token(db_user_id, request.username)
+    await request_user_context_warmup(db_user_id)
     return AuthResponse(
         user_id=db_user_id,
         username=request.username,
         access_token=token,
         status="success",
     )
+
+
+@app.post("/v1/user/warmup")
+async def warmup_user_context_endpoint(
+    current_user: TokenPayload = Depends(get_current_user),
+):
+    """Enqueue semantic profile cache warmup for the authenticated user."""
+    await request_user_context_warmup(current_user.user_id)
+    return {"status": "accepted", "user_id": current_user.user_id}
 
 
 @app.post("/v1/user/profile/update")
@@ -249,8 +287,22 @@ async def update_profile(
             else ["自重"]
         )
 
+        from ..agent.cache.semantic_profile_cache import (
+            invalidate_semantic_profile,
+            prime_semantic_profile_cache,
+        )
+
+        user_id = int(request.user_id)
+        await invalidate_semantic_profile(user_id)
+        await prime_semantic_profile_cache(
+            user_id,
+            level=request.fitness_level,
+            injuries=injuries_list,
+            equipment_list=equipments_list,
+        )
+
         enqueue_user_semantic_init(
-            user_id=request.user_id,
+            user_id=user_id,
             name=request.username,
             level=request.fitness_level,
             injuries=injuries_list,

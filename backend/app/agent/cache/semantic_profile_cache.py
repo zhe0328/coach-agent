@@ -72,3 +72,38 @@ async def invalidate_semantic_profile(user_id: int) -> None:
         logger.warning(
             f"[SemanticProfileCache] invalidate failed user_id={user_id}: {exc}"
         )
+
+
+async def prime_semantic_profile_cache(
+    user_id: int,
+    *,
+    level: str,
+    injuries: list[str],
+    equipment_list: list[str],
+) -> None:
+    """Write profile snapshot to Redis immediately (e.g. after MySQL profile update)."""
+    ttl = settings.SEMANTIC_PROFILE_CACHE_TTL_SECONDS
+    if ttl <= 0:
+        return
+
+    profile = [
+        {
+            "level": level,
+            "injuries": injuries,
+            "equipment_list": equipment_list,
+        }
+    ]
+    try:
+        await _get_async_redis().setex(
+            _profile_key(user_id),
+            ttl,
+            json.dumps(profile, ensure_ascii=False),
+        )
+        logger.info(
+            f"[SemanticProfileCache] primed user_id={user_id} "
+            f"injuries={injuries} equipment={equipment_list}"
+        )
+    except Exception as exc:
+        logger.warning(
+            f"[SemanticProfileCache] prime failed user_id={user_id}: {exc}"
+        )

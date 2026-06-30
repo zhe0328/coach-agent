@@ -47,6 +47,9 @@ class Settings(BaseSettings):
     # Preload lexicon + joint terms on API startup
     STARTUP_WARMUP_ENABLED: bool = True
 
+    # Preload Neo4j semantic profile into Redis after login / explicit warmup
+    LOGIN_WARMUP_ENABLED: bool = True
+
     # Macro planner LLM (fast-path skips this when rules match)
     MACRO_PLANNER_MODEL: str = "gpt-4o-mini"
     MACRO_PLANNER_MODEL_REPLAN: str = "gpt-4o"

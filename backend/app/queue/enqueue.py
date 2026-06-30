@@ -259,3 +259,16 @@ def enqueue_user_semantic_init(
         },
         retry=Retry(max=3, interval=[15, 45, 90]),
     )
+
+
+def enqueue_user_context_warmup(user_id: int) -> str | None:
+    """Enqueue per-user semantic profile cache warmup (login / explicit refresh)."""
+    if not settings.LOGIN_WARMUP_ENABLED:
+        return None
+    return _enqueue(
+        QUEUE_MEDIUM,
+        jobs.warmup_user_context_cache,
+        job_id=f"{user_id}__warmup_context",
+        kwargs={"user_id": user_id},
+        retry=Retry(max=2, interval=[5, 15]),
+    )

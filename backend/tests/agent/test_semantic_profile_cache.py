@@ -8,6 +8,7 @@ from app.agent.cache import semantic_profile_cache as cache_mod
 from app.agent.cache.semantic_profile_cache import (
     fetch_semantic_profile_cached,
     invalidate_semantic_profile,
+    prime_semantic_profile_cache,
 )
 from app.agent.cache.intent_resources import prefetch_intent_resources
 from app.agent.intent import fitness_lexicon as lexicon_mod
@@ -87,6 +88,21 @@ async def test_invalidate_semantic_profile(fake_redis):
     await invalidate_semantic_profile(9)
 
     assert "user:9:semantic_profile" not in fake_redis.store
+
+
+@pytest.mark.asyncio
+async def test_prime_semantic_profile_cache(fake_redis):
+    await prime_semantic_profile_cache(
+        11,
+        level="intermediate",
+        injuries=["腕关节"],
+        equipment_list=["哑铃", "自重"],
+    )
+
+    stored = json.loads(fake_redis.store["user:11:semantic_profile"])
+    assert stored[0]["level"] == "intermediate"
+    assert stored[0]["injuries"] == ["腕关节"]
+    assert stored[0]["equipment_list"] == ["哑铃", "自重"]
 
 
 @pytest.mark.asyncio

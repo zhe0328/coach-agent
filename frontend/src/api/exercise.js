@@ -123,4 +123,20 @@ export const exerciseApi = {
 
   getSessionDetails: (session_id) =>
     client.get(`v1/chat/history/${session_id}`),
+
+  /** Fire-and-forget: preload Neo4j semantic profile into Redis after login. */
+  warmupUserContext: async () => {
+    const token = localStorage.getItem("access_token");
+    if (!token) return;
+    try {
+      await fetch(`${API_BASE}/v1/user/warmup`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+    } catch (error) {
+      console.warn("User context warmup failed:", error);
+    }
+  },
 };

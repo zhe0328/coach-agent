@@ -135,6 +135,20 @@ def memory_summarize(
     )
 
 
+def warmup_user_context_cache(user_id: int) -> None:
+    """RQ job: preload semantic profile Redis cache + global intent resources."""
+    from app.agent.cache.warmup import warmup_user_context
+
+    services = _get_services()
+    asyncio.run(
+        warmup_user_context(
+            user_id,
+            services["graph_tool"],
+            services.get("sql_tool"),
+        )
+    )
+
+
 def init_user_semantic_memory(
     user_id: int,
     name: str,
@@ -142,7 +156,10 @@ def init_user_semantic_memory(
     injuries: list[str],
     equipments: list[str],
 ) -> None:
-    graph_tool = _get_services()["graph_tool"]
+    from app.agent.cache.semantic_profile_cache import invalidate_semantic_profile
+
+    services = _get_services()
+    graph_tool = services["graph_tool"]
     asyncio.run(
         graph_tool.init_user_semantic_memory(
             user_id=user_id,
@@ -152,6 +169,8 @@ def init_user_semantic_memory(
             equipments=equipments,
         )
     )
+    asyncio.run(invalidate_semantic_profile(user_id))
+    warmup_user_context_cache(user_id)
 
 
 def sniff_profile_and_maybe_consolidate(
