@@ -10,7 +10,7 @@ from ...models.schema import (
     ToolCallIntent,
     MacroPlanSchema,
 )
-from typing import List, Literal, Optional
+from typing import Any, List, Literal, Optional
 import asyncio
 
 
@@ -273,11 +273,11 @@ class SmallPlannerAgent:
             f"{LogColor.TOOL}[SmallPlanner] 🛠️ 启动微观参数合成器，开始装配全量拓扑计划...{LogColor.RESET}"
         )
 
-        # 【高级并发池】：专项专办，有针对性地开启异步小 Planner 提取任务
+        # 【高级并发池】：按 selected_tools 下标提取，避免重复 task_id 覆盖参数
         all_activated_task_ids = {intent.task_id for intent in macro_plan.selected_tools}
 
-        extract_tasks = {}
-        for intent in macro_plan.selected_tools:
+        extract_coros: list[Any | None] = [None] * len(macro_plan.selected_tools)
+        for idx, intent in enumerate(macro_plan.selected_tools):
             t_id = intent.task_id
             t_reason = intent.reason
             t_focused_query = intent.focused_query
@@ -289,36 +289,32 @@ class SmallPlannerAgent:
             )
 
             if intent.tool_name == "sql_tool":
-                extract_tasks[t_id] = self._extract_sql_params(
+                extract_coros[idx] = self._extract_sql_params(
                     t_focused_query,
                     t_reason,
                     sql_param_catalog=sql_param_catalog,
                 )
             elif intent.tool_name == "graph_tool":
-                extract_tasks[t_id] = self._extract_graph_params(
+                extract_coros[idx] = self._extract_graph_params(
                     t_focused_query, t_reason
                 )
             elif intent.tool_name == "rag_tool":
-                extract_tasks[t_id] = self._extract_rag_params(
+                extract_coros[idx] = self._extract_rag_params(
                     t_focused_query, t_reason, intent.rag_intent
                 )
 
-        # 3. 秒级并发执行所有提取器（耗时仅由最慢的一个小任务决定）
-        extracted_data = {}
-        if extract_tasks:
-            task_ids_keys = list(extract_tasks.keys())
-            completed_param_objects = await asyncio.gather(*extract_tasks.values())
-            extracted_data = dict(
-                zip(
-                    task_ids_keys,
-                    completed_objects_or_instances := completed_param_objects,
-                )
+        extracted_data: dict[int, Any] = {}
+        extract_indices = [i for i, coro in enumerate(extract_coros) if coro is not None]
+        if extract_indices:
+            completed_param_objects = await asyncio.gather(
+                *[extract_coros[i] for i in extract_indices]
             )
+            extracted_data = dict(zip(extract_indices, completed_param_objects))
 
         final_tasks: List[ToolTask] = []
 
         # 4. 遍历宏观蓝图，将选装工具完美拼装为原生的标准 ToolTask 列表
-        for intent in macro_plan.selected_tools:
+        for idx, intent in enumerate(macro_plan.selected_tools):
             t_id = intent.task_id
 
             valid_dependencies = []
@@ -343,8 +339,8 @@ class SmallPlannerAgent:
             )
 
             # 根据工具类型，将小 Planner 刚刚并发榨取出来的干净参数，定点“焊入”对应字段
-            if t_id in extracted_data:
-                param_obj = extracted_data[t_id]
+            if idx in extracted_data:
+                param_obj = extracted_data[idx]
                 if intent.tool_name == "sql_tool":
                     task_node.sql_params = param_obj
 

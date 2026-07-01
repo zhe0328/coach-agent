@@ -1,6 +1,7 @@
 import json
 from typing import List, Dict, Any, Tuple
 from pydantic import BaseModel, Field
+from app.agent.analyzer_fast_path import try_analyzer_fast_path
 from app.agent.policy.routing_keywords import ACTION_KEYWORDS, SAFETY_PHRASES
 from app.agent.utils.logger import logger, LogColor
 
@@ -74,6 +75,7 @@ class PlanAnalyzer:
         elif t == "rag" and raw:
             entry["content_snippet"] = self._format_rag(raw)
         elif t == "graph" and raw:
+            entry["scenario"] = r.get("scenario", "")
             entry["graph_inference_data"] = str(raw)[:400]
         else:
             entry["content_snippet"] = str(raw or r.get("error", ""))[:150]
@@ -161,6 +163,20 @@ class PlanAnalyzer:
                 "并配置其对应的子 reason、focused_query 进行生理拓扑安全换算！",
             )
 
+        fast = try_analyzer_fast_path(
+            user_input,
+            tool_results,
+            flags=flags,
+            is_action_query=is_action_query,
+            has_safety_concern=has_safety_concern,
+        )
+        if fast is not None:
+            ok, reason = fast
+            logger.info(
+                f"{LogColor.ANALYZER}[Analyzer] ⚡ 规则快路径: pass={ok} | {reason}{LogColor.RESET}"
+            )
+            return ok, ""
+
         try:
             logs = [self._build_log_item(r, user_input) for r in tool_results]
             instructions = self._build_instructions(flags, has_safety_concern)
@@ -172,10 +188,16 @@ class PlanAnalyzer:
                 f'{json.dumps(logs, ensure_ascii=False)}\n\n'
                 f'请你根据当下的【工具活性矩阵】，履行你的最高审查契约：\n\n'
                 f'{instructions}\n\n'
-                f'【知足常乐原则】：若数据已大体合格、且无上述死锁冲突，请果断判定为已完成（is_complete = true）。\n\n'
+                f'【知足常乐原则】：审查标准是“数据是否足够支撑回答”，而非“回答是否已写好”。\n'
+                f'若 SQL 召回数量已满足用户要求、且 graph 已执行伤病筛选，应判定 is_complete=true。\n'
+                f'不要求在数据层区分“高阶/初阶”或预先写好安全提示——这些由下游合成器完成。\n'
+                f'若数据已大体合格、且无上述死锁冲突，请果断判定为已完成（is_complete = true）。\n\n'
                 f'【步长扩容与数量审查准则】：\n'
-                f'1. 分析用户的输入，看用户是否指定了需要的动作数量（例如"推荐 4 个动作"、"来 5 个计划"）。\n'
-                f'2. 对比数据快照，如果发现 SQL 查出的动作数量或者经过 Graph 拦截后残存的安全动作数量【明显不足】以满足用户要求的数量，判定为未完成（is_complete = false）。'
+                f'1. 分析用户的输入，看用户是否指定了需要的动作数量（例如"推荐 4 个动作"、"3个练背+3个练臀"）。多个数量子句时累加总数。\n'
+                f'2. 对比数据快照，仅当 SQL/Graph 可用动作数量【明显不足】于用户要求时，判定 is_complete=false。'
+                f'多个数量子句时按 SQL 任务逐个核对，不得只看总量。'
+                f'Graph 须检查 scenario 与 graph_inference_data 形态是否一致：'
+                f'regression/progression 应为 id/name_zh 动作列表，不得仅有 injury_avoidance 的 safe_replacements 结构。'
             )
 
             response = self.client.beta.chat.completions.parse(

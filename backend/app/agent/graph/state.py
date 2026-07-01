@@ -42,3 +42,8 @@ class CoachAgentState(TypedDict, total=False):
 
     # Output
     coach_response: CoachResponse | str | None
+
+    # Latency observability
+    timings_ms: dict[str, int]
+    timings_total_ms: int
+    turn_started_perf: float

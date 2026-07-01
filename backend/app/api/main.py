@@ -2,6 +2,7 @@ from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from contextlib import asynccontextmanager
 from ..tools.sql_tool import SQLTool
 from ..config import get_settings
 from ..agent.orchestrator import CoachOrchestrator
@@ -14,7 +15,7 @@ from ..models.schema import (
     UserLoginRequest,
 )
 from ..agent.utils.logger import logger, LogColor
-from ..queue.enqueue import enqueue_user_semantic_init
+from ..queue.enqueue import enqueue_user_context_warmup, enqueue_user_semantic_init
 from ..serving.session_lock import SessionLockNotAcquired, is_session_locked
 from .auth import (
     TokenPayload,
@@ -29,13 +30,57 @@ import bcrypt
 
 settings = get_settings()
 
-app = FastAPI()
-
 client = OpenAI(
     api_key=settings.OPENAI_API_KEY,
     base_url=settings.OPENAI_BASE_URL,
 )
 orchestrator = CoachOrchestrator(client)
+
+
+async def _warmup_user_context_inline(user_id: int) -> None:
+    """Fallback when RQ is disabled (local dev without worker)."""
+    if not settings.LOGIN_WARMUP_ENABLED:
+        return
+    try:
+        from ..agent.cache.warmup import warmup_user_context
+
+        await warmup_user_context(
+            user_id,
+            orchestrator.graph_tool,
+            orchestrator.sql_tool,
+        )
+    except Exception as exc:
+        logger.warning(
+            f"{LogColor.PLAN}[Warmup] user context skipped user_id={user_id}: {exc}"
+            f"{LogColor.RESET}"
+        )
+
+
+async def request_user_context_warmup(user_id: int) -> None:
+    if not settings.LOGIN_WARMUP_ENABLED:
+        return
+    if settings.QUEUE_ENABLED:
+        enqueue_user_context_warmup(user_id)
+    else:
+        await _warmup_user_context_inline(user_id)
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    if settings.STARTUP_WARMUP_ENABLED:
+        try:
+            from ..agent.cache.warmup import warmup_intent_resources
+
+            await warmup_intent_resources(
+                orchestrator.sql_tool,
+                orchestrator.graph_tool,
+            )
+        except Exception as exc:
+            logger.warning(f"{LogColor.PLAN}[Warmup] skipped: {exc}{LogColor.RESET}")
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
 
 sql_tool = SQLTool()
 
@@ -198,12 +243,22 @@ async def login(request: UserLoginRequest):
         f"✅ [AuthAPI] 账户 '{request.username}' (ID: {db_user_id}) 鉴权通过。"
     )
     token = create_access_token(db_user_id, request.username)
+    await request_user_context_warmup(db_user_id)
     return AuthResponse(
         user_id=db_user_id,
         username=request.username,
         access_token=token,
         status="success",
     )
+
+
+@app.post("/v1/user/warmup")
+async def warmup_user_context_endpoint(
+    current_user: TokenPayload = Depends(get_current_user),
+):
+    """Enqueue semantic profile cache warmup for the authenticated user."""
+    await request_user_context_warmup(current_user.user_id)
+    return {"status": "accepted", "user_id": current_user.user_id}
 
 
 @app.post("/v1/user/profile/update")
@@ -232,8 +287,22 @@ async def update_profile(
             else ["自重"]
         )
 
+        from ..agent.cache.semantic_profile_cache import (
+            invalidate_semantic_profile,
+            prime_semantic_profile_cache,
+        )
+
+        user_id = int(request.user_id)
+        await invalidate_semantic_profile(user_id)
+        await prime_semantic_profile_cache(
+            user_id,
+            level=request.fitness_level,
+            injuries=injuries_list,
+            equipment_list=equipments_list,
+        )
+
         enqueue_user_semantic_init(
-            user_id=request.user_id,
+            user_id=user_id,
             name=request.username,
             level=request.fitness_level,
             injuries=injuries_list,
@@ -330,22 +399,6 @@ async def get_session_details(
         logger.error(f"API Error fetching session {session_id}: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
-@app.get("/v1/chat/sessions/{user_id}")
-async def get_user_sessions(user_id: str):
-    try:
-        result = await sql_tool.get_user_sessions(user_id)
-        if not result:
-            raise HTTPException(
-                status_code=404, detail=f"User with id {id} not found"
-            )
-
-        return result
-    except Exception as e:
-        print(f"API Error fetching user {user_id}: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
-
-@app.get("/v1/chat/history/{session_id}")
-async def get_session_details(session_id: str):
     try:
         result = await sql_tool.get_session_details(session_id)
         if not result:

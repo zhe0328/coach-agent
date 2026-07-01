@@ -97,7 +97,10 @@ class ExerciseDetail(ExerciseBase):
     data_type: Literal["exercise"] = "exercise"
 
 class ToolCallIntent(BaseModel):
-    task_id: str = Field(..., description="如 task_sql_base, task_graph_injury, task_rag_query")
+    task_id: str = Field(
+        ...,
+        description="全局唯一任务标识，如 task_sql_back、task_sql_glute、task_graph_injury",
+    )
     tool_name: Literal["sql_tool", "graph_tool", "rag_tool"]
     rag_intent: Optional[Literal["exercise", "knowledge", "mixed"]] = Field(None, description="仅当 tool_name 为 rag_tool 时必填")
     depends_on: Optional[List[str]] = Field(

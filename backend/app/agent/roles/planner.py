@@ -32,12 +32,8 @@ class PlannerAgent:
 
             【任务依赖生成指南 (Topological Dependency Rules)】
             - 默认情况下，所有任务都是【并行的】，它们不互相依赖，`depends_on` 应保持为空数组 `[]`。
-            - 【关键串行场景】：当且仅当发生“伤病规避”或“动作切换”需要调用 graph_tool，且同时需要针对用户匹配动作调用 sql_tool 时。
-            - 逻辑如下：graph_tool 为了避免返回成百上千个无关动作导致上下文冗余，【必须】等待 sql_tool 查出候选动作后进行定点裁剪。
-            - 在此场景下：
-            1. 为 sql_tool 任务赋予固定的标识：`task_id: "task_sql_base"`
-            2. 为 graph_tool 任务赋予标识：`task_id: "task_graph_injury"`
-            3. 【强行约束】：必须将 graph_tool 的 `depends_on` 字段声明为 `["task_sql_base"]`。
+            - 【task_id 唯一铁律】：每个工具实例必须有全局唯一的 `task_id`，禁止多个 SQL 共用同一 id。
+            - graph_tool 依赖 SQL 候选时：`depends_on` 必须列出本轮【全部】sql_tool 的 `task_id`。
 
             【核心分发逻辑 - 按优先级排序】
 

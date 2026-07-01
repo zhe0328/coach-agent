@@ -72,6 +72,8 @@ def consolidate_to_graph(
     semantic_profile: list[dict[str, Any]] | None,
     sniff: dict[str, Any] | None,
 ) -> None:
+    from app.agent.cache.semantic_profile_cache import invalidate_semantic_profile
+
     consolidator = _get_services()["consolidator"]
     parsed_sniff = _parse_model(InjurySnifferSchema, sniff) if sniff else None
     asyncio.run(
@@ -82,6 +84,7 @@ def consolidate_to_graph(
             sniff=parsed_sniff,
         )
     )
+    asyncio.run(invalidate_semantic_profile(user_id))
 
 
 def memory_summarize(
@@ -132,6 +135,20 @@ def memory_summarize(
     )
 
 
+def warmup_user_context_cache(user_id: int) -> None:
+    """RQ job: preload semantic profile Redis cache + global intent resources."""
+    from app.agent.cache.warmup import warmup_user_context
+
+    services = _get_services()
+    asyncio.run(
+        warmup_user_context(
+            user_id,
+            services["graph_tool"],
+            services.get("sql_tool"),
+        )
+    )
+
+
 def init_user_semantic_memory(
     user_id: int,
     name: str,
@@ -139,7 +156,10 @@ def init_user_semantic_memory(
     injuries: list[str],
     equipments: list[str],
 ) -> None:
-    graph_tool = _get_services()["graph_tool"]
+    from app.agent.cache.semantic_profile_cache import invalidate_semantic_profile
+
+    services = _get_services()
+    graph_tool = services["graph_tool"]
     asyncio.run(
         graph_tool.init_user_semantic_memory(
             user_id=user_id,
@@ -148,4 +168,63 @@ def init_user_semantic_memory(
             injuries=injuries,
             equipments=equipments,
         )
+    )
+    asyncio.run(invalidate_semantic_profile(user_id))
+    warmup_user_context_cache(user_id)
+
+
+def sniff_profile_and_maybe_consolidate(
+    user_id: int,
+    session_id: str,
+    turn_id: int,
+    user_query: str,
+    semantic_profile: list[dict[str, Any]] | None,
+) -> None:
+    """Async sniff_delta + consolidation trigger (off hot path)."""
+    from redis import Redis
+
+    from app.agent.memory.memory_policy import should_consolidate
+
+    services = _get_services()
+    consolidator = services["consolidator"]
+
+    sniff = asyncio.run(
+        consolidator.sniff_delta(
+            user_id=user_id,
+            user_query=user_query,
+            semantic_profile=semantic_profile,
+        )
+    )
+
+    memory = WorkingMemory(session_id=session_id, turn_count=turn_id)
+    redis = Redis.from_url(settings.REDIS_URL, decode_responses=True)
+    raw_json = redis.get(f"working_memory:{session_id}")
+    if raw_json:
+        if hasattr(WorkingMemory, "model_validate_json"):
+            memory = WorkingMemory.model_validate_json(raw_json)
+        else:
+            memory = WorkingMemory.parse_raw(raw_json)
+
+    if not should_consolidate(memory, sniff=sniff):
+        logger.info(
+            f"[Queue] sniff_profile session={session_id} turn={turn_id} "
+            "— no consolidation needed"
+        )
+        return
+
+    if sniff is not None and hasattr(sniff, "model_dump"):
+        sniff_payload = sniff.model_dump(mode="json")
+    elif sniff is not None and hasattr(sniff, "dict"):
+        sniff_payload = sniff.dict()
+    else:
+        sniff_payload = None
+    consolidate_to_graph(
+        user_id=user_id,
+        user_query=user_query,
+        semantic_profile=semantic_profile,
+        sniff=sniff_payload,
+    )
+    logger.info(
+        f"[Queue] sniff_profile session={session_id} turn={turn_id} "
+        "— consolidation completed"
     )

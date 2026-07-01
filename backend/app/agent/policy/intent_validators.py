@@ -14,6 +14,50 @@ def _contains_any(text: str, keywords: frozenset[str]) -> bool:
     return contains_phrase(text, keywords)
 
 
+def _sql_task_ids(tools: list[ToolCallIntent]) -> list[str]:
+    return [tool.task_id for tool in tools if tool.tool_name == "sql_tool"]
+
+
+def ensure_unique_macro_task_ids(
+    macro_plan: MacroPlanSchema,
+) -> tuple[MacroPlanSchema, list[str]]:
+    """Rename duplicate task_id values and widen graph SQL dependencies."""
+    actions: list[str] = []
+    seen_counts: dict[str, int] = {}
+    renamed_tools: list[ToolCallIntent] = []
+
+    for intent in macro_plan.selected_tools:
+        tid = intent.task_id
+        count = seen_counts.get(tid, 0) + 1
+        seen_counts[tid] = count
+        if count == 1:
+            renamed_tools.append(intent)
+            continue
+        new_tid = f"{tid}_{count}"
+        renamed_tools.append(intent.model_copy(update={"task_id": new_tid}))
+        actions.append(f"renamed_duplicate_task_id:{tid}->{new_tid}")
+
+    sql_ids = _sql_task_ids(renamed_tools)
+    final_tools: list[ToolCallIntent] = []
+    for intent in renamed_tools:
+        if (
+            intent.tool_name == "graph_tool"
+            and intent.depends_on
+            and len(sql_ids) > 1
+            and any("sql" in dep.lower() for dep in intent.depends_on)
+        ):
+            non_sql_deps = [dep for dep in intent.depends_on if "sql" not in dep.lower()]
+            new_deps = list(dict.fromkeys(non_sql_deps + sql_ids))
+            if new_deps != intent.depends_on:
+                actions.append("expanded_graph_depends_on:all_sql_tasks")
+                intent = intent.model_copy(update={"depends_on": new_deps})
+        final_tools.append(intent)
+
+    if not actions:
+        return macro_plan, []
+    return macro_plan.model_copy(update={"selected_tools": final_tools}), actions
+
+
 def has_graph_tool(macro_plan: MacroPlanSchema) -> bool:
     return any(tool.tool_name == "graph_tool" for tool in macro_plan.selected_tools)
 
@@ -62,7 +106,7 @@ def inject_graph_tool(
     sql_tasks = [
         tool for tool in macro_plan.selected_tools if tool.tool_name == "sql_tool"
     ]
-    depends_on = [sql_tasks[0].task_id] if sql_tasks else []
+    depends_on = _sql_task_ids(sql_tasks)
 
     graph_intent = ToolCallIntent(
         task_id="task_graph_policy",
@@ -122,6 +166,12 @@ def validate_and_patch_macro_plan(
     plan, actions = apply_chat_only_gate(macro_plan, intent_state)
     if plan.routing_mode == "chat_only":
         return plan, actions
+
+    if not plan.selected_tools:
+        return plan, actions
+
+    plan, id_actions = ensure_unique_macro_task_ids(plan)
+    actions.extend(id_actions)
 
     if not plan.selected_tools:
         return plan, actions

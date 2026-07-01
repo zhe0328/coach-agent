@@ -53,6 +53,21 @@ SYNTHESIZER_SKILL = f"""
 
 """
 
+# 流式正文专用 — 禁止 JSON / 字段名，避免 stream 输出畸形结构
+STREAM_GUIDANCE_SKILL = f"""
+{COACH_PERSONA}
+{PROGRAMMING_LOGIC}
+
+【流式正文输出铁律】
+1. 只输出 Markdown 教练正文（小标题、列表、加粗均可）。
+2. 禁止输出 JSON、XML 标签、代码块包裹的 schema、或 references/selected_tools 等字段名。
+3. 必须对下方资产包中【每一个】任务节点的 focused_query 逐一回应。
+4. 开头用 1–2 句鼓励性开场；涉及伤病时在文末提醒就医免责。
+
+### 运行时动态注入的核心资产包 (Context)
+{{context_data}}
+"""
+
 
 def get_skill_by_node(node_name: str) -> str:
     """根据节点需求返回特定的技能片段，优化上下文长度"""
